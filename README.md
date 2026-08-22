@@ -23,8 +23,9 @@ navigation-oriented environment projection. Derived tiles, component edges, inco
 component searches are reconstructible caches, never authoritative world state.
 
 `Prepare(regions)` queues affected tiles for background construction. `Invalidate(regions)` increments the environment
-revision, removes every tile whose dependency region intersects a change, clears dependent graph/search caches, and
-queues affected replacements. Active followers detect the new revision and replan.
+revision, removes every tile whose dependency region intersects a change, selectively removes graph/search caches that
+can depend on those tiles, and queues affected replacements. Published paths retain tile dependency tokens, so active
+followers replan only when a changed region can affect their path.
 
 `UpdateTopology` builds a configurable number of tiles per call. Tiles required by active queries are urgent and take
 priority; background preparation yields while navigation demand exists. `Advance` never synchronously builds a tile, so
@@ -57,7 +58,7 @@ Path requests move through bounded stages:
 4. Build or reuse a bounded tile-level portal corridor between endpoint tiles.
 5. Run weighted eight-way voxel A* inside the corridor, using stable integer costs and deterministic tie-breaking.
 6. If corridor restriction is insufficient, retry the fine search without the restriction.
-7. Publish an immutable revision-tagged `Path`.
+7. Publish an immutable revision-tagged `Path` with an opaque dependency-validation token.
 
 Fine search uses cardinal cost `1000`, diagonal cost `1414`, a vertical penalty, and a 1.25 weighted heuristic. The
 current planner does not apply `Navigation.Voxel.Api::Cell::TraversalCost`. Strict global optimality is intentionally not
@@ -69,9 +70,10 @@ Reachability queries project one source and many destinations, then use the same
 source searches as path requests. Results are updated independently as components are discovered. Direction matters:
 with asymmetric rise and drop limits, A reaching B does not imply B can reach A.
 
-Source-component searches are shared across simultaneous and later path/reachability requests for the same profile and
-environment revision. Incoming-component checks can prove isolated goals unreachable early. This makes AI feasibility
-queries substantially cheaper than constructing a full path per candidate.
+Source-component searches are shared across simultaneous and later path/reachability requests for the same profile.
+Invalidation retains searches whose explored tiles are spatially independent of the change. Incoming-component checks
+can prove isolated goals unreachable early. This makes AI feasibility queries substantially cheaper than constructing a
+full path per candidate.
 
 ## Deterministic work scheduling
 
@@ -80,8 +82,10 @@ parameters configure the principal budgets:
 
 - `expansionsPerTick`: shared fine-search node expansions;
 - `maximumExpansionsPerRequest`: deterministic per-request failure ceiling;
-- `reachabilityComponentExpansionsPerTick`: shared component-graph work; and
-- `tileBuildsPerTopologyUpdate`: derived-topology construction work.
+- `reachabilityComponentExpansionsPerTick`: completed component-graph expansions;
+- `tileBuildsPerTopologyUpdate`: derived-topology construction work; and
+- `componentCellsPerTick`: boundary cells examined while incrementally constructing outgoing or incoming component
+  edges.
 
 Defaults are public `constexpr` values on `Planner`. Active fine searches and component searches are advanced in stable
 round-robin order. Coarse work, endpoint promotion, and cold-cache construction also have deterministic internal limits.

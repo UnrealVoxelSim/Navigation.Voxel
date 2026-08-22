@@ -24,7 +24,9 @@ class Terrain final : public Api::IEnvironment
             for (auto y = region.Min.Y; y < region.Max.Y; ++y)
                 for (auto x = region.Min.X; x < region.Max.X; ++x)
                 {
-                    const auto height = DropCliff ? (x < 0 ? 3 : 0) : Ledge && x >= 2 ? 1 : 0;
+                    const auto height = VerticalTileCliff ? (y == 8 ? (x < 4 ? 15 : 11) : 0)
+                                                          : DropCliff ? (x < 0 ? 3 : 0)
+                                                                      : Ledge && x >= 2 ? 1 : 0;
                     const auto barrier = (SealedBarrier || Barrier) && x == 16 &&
                                          (SealedBarrier || std::abs(y - 20) > 2) && z <= 3;
                     const auto passage = HeadBlockedPassage &&
@@ -39,6 +41,7 @@ class Terrain final : public Api::IEnvironment
     bool Barrier{};
     bool SealedBarrier{};
     bool DropCliff{};
+    bool VerticalTileCliff{};
     bool HeadBlockedPassage{};
     mutable std::size_t RegionReads{};
 };
@@ -78,6 +81,39 @@ TEST(PlannerTest, FindsDeterministicEightWayPathAcrossFlatTerrain)
     EXPECT_EQ(path->Waypoints.front().Location, Location(0, 0, 1));
     EXPECT_EQ(path->Waypoints.back().Location, Location(12, 12, 1));
     EXPECT_EQ(path->EnvironmentRevision, 1U);
+    EXPECT_NE(path->ValidationToken, 0U);
+    EXPECT_TRUE(planner.IsPathCurrent(*path));
+}
+
+TEST(PlannerTest, InvalidatesOnlyPathsNearChangedVoxels)
+{
+    Terrain terrain;
+    const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
+    Planner planner{terrain, profiles, 4096, Planner::DefaultMaximumExpansionsPerRequest,
+                    Planner::DefaultReachabilityComponentExpansionsPerTick, 64};
+    ASSERT_TRUE(planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id,
+                               Location(0, 0, 1), Location(8, 0, 1)}));
+    ASSERT_TRUE(planner.Begin({Navigation::Api::RequestId{2}, profiles[0].Id,
+                               Location(0, 32, 1), Location(8, 32, 1)}));
+    for (std::uint64_t tick = 0; tick < 200; ++tick)
+    {
+        Advance(planner, tick);
+        if (planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Complete &&
+            planner.State(Navigation::Api::RequestId{2}) == Navigation::Api::PlanState::Complete)
+            break;
+    }
+    const auto nearPath = planner.ReadPath(Navigation::Api::RequestId{1});
+    const auto distantPath = planner.ReadPath(Navigation::Api::RequestId{2});
+    ASSERT_NE(nearPath, nullptr);
+    ASSERT_NE(distantPath, nullptr);
+    ASSERT_TRUE(planner.IsPathCurrent(*nearPath));
+    ASSERT_TRUE(planner.IsPathCurrent(*distantPath));
+
+    const std::array regions{UnrealVoxelSim::Voxel::Api::Region{{4, 0, 0}, {5, 1, 3}}};
+    planner.Invalidate(regions);
+
+    EXPECT_FALSE(planner.IsPathCurrent(*nearPath));
+    EXPECT_TRUE(planner.IsPathCurrent(*distantPath));
 }
 
 TEST(PlannerTest, UsesConfiguredAdjacentRise)
@@ -219,6 +255,30 @@ TEST(ReachabilityTest, PreservesDirectedDropSemantics)
     EXPECT_EQ(upward->Destinations[0], Navigation::Api::ReachabilityState::Unreachable);
 }
 
+TEST(ReachabilityTest, FindsDirectedEdgesAcrossVerticalTileBoundaries)
+{
+    Terrain terrain;
+    terrain.VerticalTileCliff = true;
+    const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
+    Planner planner{terrain, profiles, Planner::DefaultExpansionsPerTick,
+                    Planner::DefaultMaximumExpansionsPerRequest,
+                    Planner::DefaultReachabilityComponentExpansionsPerTick, 64};
+    ASSERT_TRUE(planner.BeginReachability({Navigation::Api::ReachabilityRequestId{1}, profiles[0].Id,
+                                           Location(2, 8, 16), {Location(6, 8, 12)}}));
+    ASSERT_TRUE(planner.BeginReachability({Navigation::Api::ReachabilityRequestId{2}, profiles[0].Id,
+                                           Location(6, 8, 12), {Location(2, 8, 16)}}));
+
+    for (std::uint64_t tick = 0; tick < 500; ++tick)
+        Advance(planner, tick);
+
+    const auto downward = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
+    const auto upward = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{2});
+    ASSERT_NE(downward, nullptr);
+    ASSERT_NE(upward, nullptr);
+    EXPECT_EQ(downward->Destinations[0], Navigation::Api::ReachabilityState::Reachable);
+    EXPECT_EQ(upward->Destinations[0], Navigation::Api::ReachabilityState::Unreachable);
+}
+
 TEST(ReachabilityTest, AppliesInitializationBudgetDeterministically)
 {
     Terrain terrain;
@@ -234,7 +294,7 @@ TEST(ReachabilityTest, AppliesInitializationBudgetDeterministically)
     ASSERT_NE(result, nullptr);
     EXPECT_FALSE(result->IsComplete());
 
-    for (std::uint64_t tick = 1; tick < 100 && !result->IsComplete(); ++tick)
+    for (std::uint64_t tick = 1; tick < 200 && !result->IsComplete(); ++tick)
         Advance(planner, tick);
 
     EXPECT_TRUE(result->IsComplete());
@@ -263,6 +323,32 @@ TEST(ReachabilityTest, RecomputesAfterEnvironmentInvalidation)
     EXPECT_EQ(result->Destinations[0], Navigation::Api::ReachabilityState::Pending);
     for (std::uint64_t tick = 20; tick < 40 && !result->IsComplete(); ++tick)
         Advance(planner, tick);
+    EXPECT_EQ(result->Destinations[0], Navigation::Api::ReachabilityState::Reachable);
+}
+
+TEST(ReachabilityTest, RetainsResultAfterDistantEnvironmentInvalidation)
+{
+    Terrain terrain;
+    const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
+    Planner planner{terrain, profiles, Planner::DefaultExpansionsPerTick,
+                    Planner::DefaultMaximumExpansionsPerRequest,
+                    Planner::DefaultReachabilityComponentExpansionsPerTick, 64};
+    ASSERT_TRUE(planner.BeginReachability({Navigation::Api::ReachabilityRequestId{1}, profiles[0].Id,
+                                           Location(0, 32, 1), {Location(8, 32, 1)}}));
+    for (std::uint64_t tick = 0; tick < 200; ++tick)
+    {
+        Advance(planner, tick);
+        if (planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1})->IsComplete()) break;
+    }
+    const auto result = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
+    ASSERT_NE(result, nullptr);
+    ASSERT_TRUE(result->IsComplete());
+
+    const std::array regions{UnrealVoxelSim::Voxel::Api::Region{{4, 0, 0}, {5, 1, 3}}};
+    planner.Invalidate(regions);
+
+    EXPECT_EQ(result->EnvironmentRevision, 2U);
+    EXPECT_TRUE(result->IsComplete());
     EXPECT_EQ(result->Destinations[0], Navigation::Api::ReachabilityState::Reachable);
 }
 

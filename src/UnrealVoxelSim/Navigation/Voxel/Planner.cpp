@@ -209,6 +209,7 @@ struct CoarseCorridor final
 {
     std::vector<TileKey> Allowed;
     std::map<TileKey, TileGuidance> Guidance;
+    std::set<TileKey> Dependencies;
 };
 
 struct CoarseRecord final
@@ -246,6 +247,7 @@ struct CoarseOpenWorse final
 struct Request final
 {
     NavigationApi::RequestId Id;
+    NavigationApi::PlanRequest Plan;
     NavigationApi::PlanState State{NavigationApi::PlanState::Pending};
     std::optional<Search> SearchState;
     std::shared_ptr<const NavigationApi::Path> Path;
@@ -264,6 +266,12 @@ struct ComponentSearch final
     bool Complete{};
 };
 
+struct ComponentEdgeBuild final
+{
+    std::size_t NextCell{};
+    std::vector<ComponentKey> Edges;
+};
+
 struct ReachabilityRequest final
 {
     NavigationApi::ReachabilityQuery Query;
@@ -275,6 +283,13 @@ struct ReachabilityRequest final
     bool Initialized{};
 };
 
+struct PathValidation final
+{
+    Movement::Api::ProfileId Profile;
+    std::set<TileKey> Dependencies;
+    bool Current{true};
+};
+
 } // namespace
 
 class Planner::Impl final
@@ -283,14 +298,15 @@ class Planner::Impl final
     Impl(const EnvironmentApi::IEnvironment &environment, std::span<const Movement::Api::GroundedProfile> profiles,
          const std::size_t expansionsPerTick, const std::size_t maximumExpansionsPerRequest,
          const std::size_t reachabilityComponentExpansionsPerTick,
-         const std::size_t tileBuildsPerTopologyUpdate)
+         const std::size_t tileBuildsPerTopologyUpdate, const std::size_t componentCellsPerTick)
         : Environment(environment), Profiles(profiles.begin(), profiles.end()), ExpansionsPerTick(expansionsPerTick),
-          MaximumExpansionsPerRequest(maximumExpansionsPerRequest),
-          ReachabilityComponentExpansionsPerTick(reachabilityComponentExpansionsPerTick),
-          TileBuildsPerTopologyUpdate(tileBuildsPerTopologyUpdate)
+           MaximumExpansionsPerRequest(maximumExpansionsPerRequest),
+           ReachabilityComponentExpansionsPerTick(reachabilityComponentExpansionsPerTick),
+           TileBuildsPerTopologyUpdate(tileBuildsPerTopologyUpdate), ComponentCellsPerTick(componentCellsPerTick)
     {
         if (Profiles.empty() || ExpansionsPerTick == 0 || MaximumExpansionsPerRequest == 0 ||
             ReachabilityComponentExpansionsPerTick == 0 || TileBuildsPerTopologyUpdate == 0 ||
+            ComponentCellsPerTick == 0 ||
             std::ranges::any_of(Profiles, [](const auto &profile) { return !profile.IsValid(); }))
             throw std::invalid_argument{"Planner requires valid profiles and a non-zero expansion budget."};
         std::ranges::sort(Profiles, {}, &Movement::Api::GroundedProfile::Id);
@@ -304,6 +320,28 @@ class Planner::Impl final
     {
         const auto iterator = std::ranges::lower_bound(Profiles, id, {}, &Movement::Api::GroundedProfile::Id);
         return iterator != Profiles.end() && iterator->Id == id ? &*iterator : nullptr;
+    }
+
+    [[nodiscard]] bool GraphTileAffected(const Movement::Api::ProfileId profileId, const TileKey tile,
+                                         const std::set<ProfileTileKey> &affected) const noexcept
+    {
+        const auto *profile = Profile(profileId);
+        if (!profile) return true;
+        const auto verticalDistance = 1 + static_cast<std::int64_t>(
+                                              std::max(profile->MaximumRise, profile->MaximumDrop)) /
+                                              TileEdge;
+        return std::ranges::any_of(affected, [&](const ProfileTileKey candidate) {
+            return candidate.Profile == profileId &&
+                   std::abs(static_cast<std::int64_t>(candidate.Tile.X) - tile.X) <= 1 &&
+                   std::abs(static_cast<std::int64_t>(candidate.Tile.Y) - tile.Y) <= 1 &&
+                   std::abs(static_cast<std::int64_t>(candidate.Tile.Z) - tile.Z) <= verticalDistance;
+        });
+    }
+
+    [[nodiscard]] bool ComponentAffected(const ComponentKey component,
+                                         const std::set<ProfileTileKey> &affected) const noexcept
+    {
+        return GraphTileAffected(component.Profile, component.Tile, affected);
     }
 
     [[nodiscard]] auto FindRequest(const NavigationApi::RequestId id) noexcept
@@ -689,47 +727,83 @@ class Planner::Impl final
         return ComponentKey{profile.Id, tileKey, component};
     }
 
-    [[nodiscard]] bool ComponentDependenciesReady(const ComponentKey key)
+    [[nodiscard]] bool OutgoingCellDependenciesReady(const VoxelApi::Position current,
+                                                      const Movement::Api::GroundedProfile &profile)
     {
-        const auto *profile = Profile(key.Profile);
-        const auto tile = Tiles.find({key.Profile, key.Tile});
-        if (!profile || tile == Tiles.end() || key.Component >= tile->second.ComponentCells.size()) return false;
         auto ready = true;
         const auto bounds = Environment.Bounds();
-        for (const auto current : tile->second.ComponentCells[key.Component])
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+            {
+                if (dx == 0 && dy == 0) continue;
+                for (auto elevation = -static_cast<std::int32_t>(profile.MaximumDrop);
+                     elevation <= static_cast<std::int32_t>(profile.MaximumRise); ++elevation)
                 {
-                    if (dx == 0 && dy == 0) continue;
-                    for (auto elevation = -static_cast<std::int32_t>(profile->MaximumDrop);
-                         elevation <= static_cast<std::int32_t>(profile->MaximumRise); ++elevation)
-                    {
-                        const VoxelApi::Position candidate{current.X + dx, current.Y + dy, current.Z + elevation};
-                        if (!bounds.Contains(candidate)) continue;
-                        const ProfileTileKey dependency{key.Profile, ToTile(candidate)};
-                        if (dependency.Tile == key.Tile) continue;
-                        QueueTile(dependency);
-                        ready = IsTileReady(dependency) && ready;
-                    }
+                    const VoxelApi::Position candidate{current.X + dx, current.Y + dy, current.Z + elevation};
+                    if (!bounds.Contains(candidate)) continue;
+                    const ProfileTileKey dependency{profile.Id, ToTile(candidate)};
+                    QueueTile(dependency);
+                    ready = IsTileReady(dependency) && ready;
                 }
+            }
         return ready;
     }
 
-    [[nodiscard]] std::optional<std::vector<ComponentKey>> OutgoingEdges(const ComponentKey key)
+    [[nodiscard]] static bool IsHorizontalTileBoundary(const VoxelApi::Position position,
+                                                       const TileKey tile) noexcept
     {
-        if (const auto cached = ComponentEdgeCache.find(key); cached != ComponentEdgeCache.end()) return cached->second;
-        const auto *profile = Profile(key.Profile);
-        if (!profile) return std::vector<ComponentKey>{};
-        if (!ComponentDependenciesReady(key)) return std::nullopt;
-        const auto tileIterator = Tiles.find(ProfileTileKey{key.Profile, key.Tile});
-        if (tileIterator == Tiles.end() || key.Component >= tileIterator->second.ComponentCells.size())
-            return std::vector<ComponentKey>{};
+        const auto x = Local(position.X, tile.X);
+        const auto y = Local(position.Y, tile.Y);
+        return x == 0 || x == TileEdge - 1 || y == 0 || y == TileEdge - 1;
+    }
 
-        std::vector<ComponentKey> edges;
-        for (const auto local : tileIterator->second.LocalEdges[key.Component])
-            edges.push_back({key.Profile, key.Tile, local});
-        const auto cells = tileIterator->second.ComponentCells[key.Component];
-        for (const auto current : cells)
+    [[nodiscard]] static bool IsOutgoingTileBoundary(const VoxelApi::Position position, const TileKey tile,
+                                                     const Movement::Api::GroundedProfile &profile) noexcept
+    {
+        const auto z = Local(position.Z, tile.Z);
+        return IsHorizontalTileBoundary(position, tile) ||
+               z < static_cast<std::int32_t>(profile.MaximumDrop) ||
+               z + static_cast<std::int32_t>(profile.MaximumRise) >= TileEdge;
+    }
+
+    [[nodiscard]] static bool IsIncomingTileBoundary(const VoxelApi::Position position, const TileKey tile,
+                                                     const Movement::Api::GroundedProfile &profile) noexcept
+    {
+        const auto z = Local(position.Z, tile.Z);
+        return IsHorizontalTileBoundary(position, tile) ||
+               z < static_cast<std::int32_t>(profile.MaximumRise) ||
+               z + static_cast<std::int32_t>(profile.MaximumDrop) >= TileEdge;
+    }
+
+    [[nodiscard]] bool AdvanceOutgoingEdges(const ComponentKey key, std::size_t &remainingCells)
+    {
+        if (ComponentEdgeCache.contains(key)) return true;
+        const auto *profile = Profile(key.Profile);
+        const auto tile = Tiles.find(ProfileTileKey{key.Profile, key.Tile});
+        if (!profile || tile == Tiles.end() || key.Component >= tile->second.ComponentCells.size())
+        {
+            ComponentEdgeCache.emplace(key, std::vector<ComponentKey>{});
+            return true;
+        }
+
+        auto [jobIterator, inserted] = PendingComponentEdgeBuilds.try_emplace(key);
+        auto &job = jobIterator->second;
+        if (inserted)
+            for (const auto local : tile->second.LocalEdges[key.Component])
+                job.Edges.push_back({key.Profile, key.Tile, local});
+
+        const auto &cells = tile->second.ComponentCells[key.Component];
+        while (job.NextCell < cells.size())
+        {
+            const auto current = cells[job.NextCell];
+            if (!IsOutgoingTileBoundary(current, key.Tile, *profile))
+            {
+                ++job.NextCell;
+                continue;
+            }
+            if (remainingCells == 0) return false;
+            --remainingCells;
+            if (!OutgoingCellDependenciesReady(current, *profile)) return false;
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dx = -1; dx <= 1; ++dx)
                 {
@@ -737,51 +811,70 @@ class Planner::Impl final
                     const auto neighbor = Neighbor(current, dx, dy, *profile);
                     if (!neighbor || ToTile(*neighbor) == key.Tile) continue;
                     const auto target = ComponentAt(*neighbor, *profile);
-                    if (target) edges.push_back(*target);
+                    if (target) job.Edges.push_back(*target);
                 }
-        std::ranges::sort(edges);
-        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-        ComponentEdgeCache.emplace(key, edges);
-        return edges;
+            ++job.NextCell;
+        }
+        if (job.NextCell != cells.size()) return false;
+        std::ranges::sort(job.Edges);
+        job.Edges.erase(std::unique(job.Edges.begin(), job.Edges.end()), job.Edges.end());
+        ComponentEdgeCache.emplace(key, std::move(job.Edges));
+        PendingComponentEdgeBuilds.erase(jobIterator);
+        return true;
     }
 
-    [[nodiscard]] bool IncomingDependenciesReady(const ComponentKey key)
+    [[nodiscard]] bool IncomingCellDependenciesReady(const VoxelApi::Position target,
+                                                      const Movement::Api::GroundedProfile &profile)
     {
-        const auto *profile = Profile(key.Profile);
-        const auto tile = Tiles.find({key.Profile, key.Tile});
-        if (!profile || tile == Tiles.end() || key.Component >= tile->second.ComponentCells.size()) return false;
         auto ready = true;
         const auto bounds = Environment.Bounds();
-        for (const auto target : tile->second.ComponentCells[key.Component])
-            for (int dy = -1; dy <= 1; ++dy)
-                for (int dx = -1; dx <= 1; ++dx)
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+            {
+                if (dx == 0 && dy == 0) continue;
+                for (auto elevation = -static_cast<std::int32_t>(profile.MaximumRise);
+                     elevation <= static_cast<std::int32_t>(profile.MaximumDrop); ++elevation)
                 {
-                    if (dx == 0 && dy == 0) continue;
-                    for (auto elevation = -static_cast<std::int32_t>(profile->MaximumRise);
-                         elevation <= static_cast<std::int32_t>(profile->MaximumDrop); ++elevation)
-                    {
-                        const VoxelApi::Position predecessor{target.X - dx, target.Y - dy, target.Z + elevation};
-                        if (!bounds.Contains(predecessor)) continue;
-                        const ProfileTileKey dependency{key.Profile, ToTile(predecessor)};
-                        QueueTile(dependency);
-                        ready = IsTileReady(dependency) && ready;
-                    }
+                    const VoxelApi::Position predecessor{target.X - dx, target.Y - dy, target.Z + elevation};
+                    if (!bounds.Contains(predecessor)) continue;
+                    const ProfileTileKey dependency{profile.Id, ToTile(predecessor)};
+                    QueueTile(dependency);
+                    ready = IsTileReady(dependency) && ready;
                 }
+            }
         return ready;
     }
 
-    [[nodiscard]] std::optional<std::vector<ComponentKey>> IncomingEdges(const ComponentKey key)
+    [[nodiscard]] bool AdvanceIncomingEdges(const ComponentKey key, std::size_t &remainingCells)
     {
-        if (const auto cached = ComponentIncomingCache.find(key); cached != ComponentIncomingCache.end())
-            return cached->second;
+        if (ComponentIncomingCache.contains(key)) return true;
         const auto *profile = Profile(key.Profile);
         const auto tile = Tiles.find({key.Profile, key.Tile});
         if (!profile || tile == Tiles.end() || key.Component >= tile->second.ComponentCells.size())
-            return std::vector<ComponentKey>{};
-        if (!IncomingDependenciesReady(key)) return std::nullopt;
-        std::vector<ComponentKey> edges;
+        {
+            ComponentIncomingCache.emplace(key, std::vector<ComponentKey>{});
+            return true;
+        }
+
+        auto [jobIterator, inserted] = PendingComponentIncomingBuilds.try_emplace(key);
+        auto &job = jobIterator->second;
+        if (inserted)
+            for (std::size_t source = 0; source < tile->second.LocalEdges.size(); ++source)
+                if (std::ranges::binary_search(tile->second.LocalEdges[source], key.Component))
+                    job.Edges.push_back({key.Profile, key.Tile, static_cast<std::uint16_t>(source)});
+        const auto &cells = tile->second.ComponentCells[key.Component];
         const auto bounds = Environment.Bounds();
-        for (const auto target : tile->second.ComponentCells[key.Component])
+        while (job.NextCell < cells.size())
+        {
+            const auto target = cells[job.NextCell];
+            if (!IsIncomingTileBoundary(target, key.Tile, *profile))
+            {
+                ++job.NextCell;
+                continue;
+            }
+            if (remainingCells == 0) return false;
+            --remainingCells;
+            if (!IncomingCellDependenciesReady(target, *profile)) return false;
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dx = -1; dx <= 1; ++dx)
                 {
@@ -794,13 +887,17 @@ class Planner::Impl final
                         const auto transition = Neighbor(predecessor, dx, dy, *profile);
                         if (!transition || *transition != target) continue;
                         const auto source = ComponentAt(predecessor, *profile);
-                        if (source && *source != key) edges.push_back(*source);
+                        if (source && *source != key) job.Edges.push_back(*source);
                     }
                 }
-        std::ranges::sort(edges);
-        edges.erase(std::unique(edges.begin(), edges.end()), edges.end());
-        ComponentIncomingCache.emplace(key, edges);
-        return edges;
+            ++job.NextCell;
+        }
+        if (job.NextCell != cells.size()) return false;
+        std::ranges::sort(job.Edges);
+        job.Edges.erase(std::unique(job.Edges.begin(), job.Edges.end()), job.Edges.end());
+        ComponentIncomingCache.emplace(key, std::move(job.Edges));
+        PendingComponentIncomingBuilds.erase(jobIterator);
+        return true;
     }
 
     [[nodiscard]] auto FindComponentSearch(const ComponentKey source) noexcept
@@ -850,6 +947,7 @@ class Planner::Impl final
     void AdvanceComponentSearches()
     {
         auto remaining = ReachabilityComponentExpansionsPerTick;
+        auto remainingCells = ComponentCellsPerTick;
         while (remaining != 0 && !ActiveComponentSearches.empty())
         {
             if (ActiveComponentCursor >= ActiveComponentSearches.size()) ActiveComponentCursor = 0;
@@ -865,10 +963,11 @@ class Planner::Impl final
                 continue;
             }
             const auto component = search->Open.front();
-            const auto edges = OutgoingEdges(component);
-            if (!edges) return;
+            if (!AdvanceOutgoingEdges(component, remainingCells)) return;
+            const auto edges = ComponentEdgeCache.find(component);
+            assert(edges != ComponentEdgeCache.end());
             search->Open.pop_front();
-            for (const auto target : *edges)
+            for (const auto target : edges->second)
                 if (search->Visited.insert(target).second) search->Open.push_back(target);
             --remaining;
             if (search->Open.empty())
@@ -997,6 +1096,8 @@ class Planner::Impl final
         }
 
         CoarseCorridor corridor;
+        for (const auto &[tile, record] : records)
+            if (record.Closed) corridor.Dependencies.insert(tile);
         if (reached)
         {
             std::vector<TileKey> centerLine{key.Goal};
@@ -1051,8 +1152,10 @@ class Planner::Impl final
             positions.push_back(current);
         }
         std::ranges::reverse(positions);
+        const auto profile = request.SearchState->Profile;
         auto path = std::make_shared<NavigationApi::Path>();
         path->EnvironmentRevision = Revision;
+        path->ValidationToken = NextPathValidationToken++;
         path->Waypoints.reserve(positions.size());
         for (std::size_t index = 0; index < positions.size(); ++index)
         {
@@ -1061,6 +1164,9 @@ class Planner::Impl final
             if (index != 0 && positions[index].Z < positions[index - 1].Z) primitive = NavigationApi::StandardPrimitives::Drop;
             path->Waypoints.push_back({ToContinuous(positions[index]), primitive});
         }
+        PathValidation validation{profile};
+        for (const auto position : positions) validation.Dependencies.insert(ToTile(position));
+        PathValidations.emplace(path->ValidationToken, std::move(validation));
         request.Path = std::move(path);
         request.State = NavigationApi::PlanState::Complete;
         request.SearchState.reset();
@@ -1254,6 +1360,18 @@ class Planner::Impl final
     {
         auto builtColdCorridor = false;
         auto incomingBuildBudget = allowColdWork ? ColdIncomingComponentBuildsPerTick : 0;
+        auto incomingCellBudget = ComponentCellsPerTick;
+        const auto incomingEmpty = [&](const ComponentKey key) -> std::optional<bool> {
+            if (!ComponentIncomingCache.contains(key))
+            {
+                if (incomingBuildBudget == 0) return std::nullopt;
+                --incomingBuildBudget;
+                if (!AdvanceIncomingEdges(key, incomingCellBudget)) return std::nullopt;
+            }
+            const auto cached = ComponentIncomingCache.find(key);
+            assert(cached != ComponentIncomingCache.end());
+            return cached->second.empty();
+        };
         for (auto &request : ReachabilityRequests)
         {
             if (!request.Initialized || !request.Source || request.Result->IsComplete()) continue;
@@ -1268,14 +1386,8 @@ class Planner::Impl final
                     request.Result->Destinations[index] = NavigationApi::ReachabilityState::Reachable;
                 else
                 {
-                    const auto incomingCached = ComponentIncomingCache.contains(*request.Goals[index]);
-                    if (incomingCached || incomingBuildBudget != 0)
-                    {
-                        if (!incomingCached) --incomingBuildBudget;
-                        const auto incoming = IncomingEdges(*request.Goals[index]);
-                        if (incoming && incoming->empty())
-                            request.Result->Destinations[index] = NavigationApi::ReachabilityState::Unreachable;
-                    }
+                    if (incomingEmpty(*request.Goals[index]).value_or(false))
+                        request.Result->Destinations[index] = NavigationApi::ReachabilityState::Unreachable;
                     if (search->Complete)
                         request.Result->Destinations[index] = NavigationApi::ReachabilityState::Unreachable;
                 }
@@ -1292,13 +1404,7 @@ class Planner::Impl final
             if (search == ComponentSearches.end()) continue;
             if (!search->Visited.contains(*request.ReachabilityGoal))
             {
-                const auto incomingCached = ComponentIncomingCache.contains(*request.ReachabilityGoal);
-                const auto mayBuildIncoming = incomingCached || incomingBuildBudget != 0;
-                if (!incomingCached && mayBuildIncoming) --incomingBuildBudget;
-                const auto incoming = mayBuildIncoming
-                                          ? IncomingEdges(*request.ReachabilityGoal)
-                                          : std::optional<std::vector<ComponentKey>>{};
-                if (incoming && incoming->empty())
+                if (incomingEmpty(*request.ReachabilityGoal).value_or(false))
                 {
                     request.State = NavigationApi::PlanState::Unreachable;
                     request.PendingPlan.reset();
@@ -1345,6 +1451,7 @@ class Planner::Impl final
     std::size_t MaximumExpansionsPerRequest;
     std::size_t ReachabilityComponentExpansionsPerTick;
     std::size_t TileBuildsPerTopologyUpdate;
+    std::size_t ComponentCellsPerTick;
     std::map<ProfileTileKey, Tile> Tiles;
     std::set<ProfileTileKey> PendingTileBuilds;
     std::set<ProfileTileKey> UrgentTileBuilds;
@@ -1356,6 +1463,8 @@ class Planner::Impl final
     std::map<CorridorKey, CoarseCorridor> Corridors;
     std::map<ComponentKey, std::vector<ComponentKey>> ComponentEdgeCache;
     std::map<ComponentKey, std::vector<ComponentKey>> ComponentIncomingCache;
+    std::map<ComponentKey, ComponentEdgeBuild> PendingComponentEdgeBuilds;
+    std::map<ComponentKey, ComponentEdgeBuild> PendingComponentIncomingBuilds;
     std::vector<ComponentSearch> ComponentSearches;
     std::vector<ComponentKey> ActiveComponentSearches;
     std::size_t ActiveComponentCursor{};
@@ -1363,6 +1472,8 @@ class Planner::Impl final
     std::vector<Request> Requests;
     std::vector<NavigationApi::RequestId> ActiveRequests;
     std::size_t ActiveCursor{};
+    std::map<std::uint64_t, PathValidation> PathValidations;
+    std::uint64_t NextPathValidationToken{1};
     std::uint64_t Revision{1};
     std::thread::id OwnerThread{std::this_thread::get_id()};
 };
@@ -1371,9 +1482,10 @@ Planner::Planner(const EnvironmentApi::IEnvironment &environment,
                  const std::span<const Movement::Api::GroundedProfile> profiles, const std::size_t expansionsPerTick,
                  const std::size_t maximumExpansionsPerRequest,
                  const std::size_t reachabilityComponentExpansionsPerTick,
-                 const std::size_t tileBuildsPerTopologyUpdate)
+                 const std::size_t tileBuildsPerTopologyUpdate, const std::size_t componentCellsPerTick)
     : Impl_(std::make_unique<Impl>(environment, profiles, expansionsPerTick, maximumExpansionsPerRequest,
-                                  reachabilityComponentExpansionsPerTick, tileBuildsPerTopologyUpdate)) {}
+                                  reachabilityComponentExpansionsPerTick, tileBuildsPerTopologyUpdate,
+                                  componentCellsPerTick)) {}
 Planner::~Planner() = default;
 
 std::expected<void, NavigationApi::PlanError> Planner::Begin(const NavigationApi::PlanRequest request)
@@ -1386,6 +1498,7 @@ std::expected<void, NavigationApi::PlanError> Planner::Begin(const NavigationApi
     if (iterator != Impl_->Requests.end() && iterator->Id == request.Request)
         return std::unexpected{NavigationApi::PlanError::DuplicateRequest};
     Request planned{request.Request};
+    planned.Plan = request;
     planned.PendingPlan = request;
     Impl_->Requests.insert(iterator, std::move(planned));
     Impl_->QueueProjection(request.Start, *profile);
@@ -1399,6 +1512,7 @@ void Planner::Cancel(const NavigationApi::RequestId request) noexcept
     const auto iterator = Impl_->FindRequest(request);
     if (iterator != Impl_->Requests.end() && iterator->Id == request)
     {
+        if (iterator->Path) Impl_->PathValidations.erase(iterator->Path->ValidationToken);
         Impl_->RemoveActive(request);
         Impl_->Requests.erase(iterator);
     }
@@ -1440,6 +1554,13 @@ std::uint64_t Planner::CurrentEnvironmentRevision() const noexcept
 {
     Impl_->AssertOwnerThread();
     return Impl_->Revision;
+}
+
+bool Planner::IsPathCurrent(const NavigationApi::Path &path) const noexcept
+{
+    Impl_->AssertOwnerThread();
+    const auto validation = Impl_->PathValidations.find(path.ValidationToken);
+    return validation != Impl_->PathValidations.end() && validation->second.Current;
 }
 
 NavigationApi::PlanState Planner::State(const NavigationApi::RequestId request) const noexcept
@@ -1502,17 +1623,58 @@ void Planner::Invalidate(const std::span<const VoxelApi::Region> regions)
     Impl_->AssertOwnerThread();
     if (regions.empty()) return;
     ++Impl_->Revision;
-    std::erase_if(Impl_->Tiles, [&](const auto &entry) {
-        return std::ranges::any_of(regions, [&](const auto region) { return Intersects(entry.second.Dependency, region); });
-    });
+    std::set<ProfileTileKey> affectedTiles;
+    for (auto tile = Impl_->Tiles.begin(); tile != Impl_->Tiles.end();)
+    {
+        if (!std::ranges::any_of(regions,
+                                 [&](const auto region) { return Intersects(tile->second.Dependency, region); }))
+        {
+            ++tile;
+            continue;
+        }
+        affectedTiles.insert(tile->first);
+        tile = Impl_->Tiles.erase(tile);
+    }
     Impl_->QueueAffectedRegions(regions);
-    Impl_->TileNeighborCache.clear();
-    Impl_->Corridors.clear();
-    Impl_->ComponentEdgeCache.clear();
-    Impl_->ComponentIncomingCache.clear();
-    Impl_->ComponentSearches.clear();
-    Impl_->ActiveComponentSearches.clear();
-    Impl_->ActiveComponentCursor = 0;
+
+    std::erase_if(Impl_->TileNeighborCache, [&](const auto &entry) {
+        return Impl_->GraphTileAffected(entry.first.Profile, entry.first.Tile, affectedTiles);
+    });
+    std::erase_if(Impl_->Corridors, [&](const auto &entry) {
+        return std::ranges::any_of(entry.second.Dependencies, [&](const auto tile) {
+            return Impl_->GraphTileAffected(entry.first.Profile, tile, affectedTiles);
+        });
+    });
+    const auto componentAffected = [&](const auto &entry) {
+        return Impl_->ComponentAffected(entry.first, affectedTiles);
+    };
+    std::erase_if(Impl_->ComponentEdgeCache, componentAffected);
+    std::erase_if(Impl_->ComponentIncomingCache, componentAffected);
+    std::erase_if(Impl_->PendingComponentEdgeBuilds, componentAffected);
+    std::erase_if(Impl_->PendingComponentIncomingBuilds, componentAffected);
+
+    std::set<ComponentKey> invalidatedSearches;
+    std::erase_if(Impl_->ComponentSearches, [&](const ComponentSearch &search) {
+        const auto affected = std::ranges::any_of(search.Visited, [&](const auto component) {
+            return Impl_->ComponentAffected(component, affectedTiles);
+        });
+        if (affected) invalidatedSearches.insert(search.Source);
+        return affected;
+    });
+    std::erase_if(Impl_->ActiveComponentSearches,
+                  [&](const auto source) { return invalidatedSearches.contains(source); });
+    if (Impl_->ActiveComponentCursor >= Impl_->ActiveComponentSearches.size()) Impl_->ActiveComponentCursor = 0;
+
+    for (auto &entry : Impl_->PathValidations)
+    {
+        auto &validation = entry.second;
+        if (validation.Current &&
+            std::ranges::any_of(validation.Dependencies, [&](const auto tile) {
+                return Impl_->GraphTileAffected(validation.Profile, tile, affectedTiles);
+            }))
+            validation.Current = false;
+    }
+
     for (auto &request : Impl_->ReachabilityRequests)
     {
         const auto cancelled = std::ranges::all_of(request.Result->Destinations, [](const auto state) {
@@ -1520,6 +1682,18 @@ void Planner::Invalidate(const std::span<const VoxelApi::Region> regions)
         });
         if (cancelled) continue;
         request.Result->EnvironmentRevision = Impl_->Revision;
+        const auto endpointAffected =
+            Impl_->GraphTileAffected(request.Query.Profile, ToTile(ToVoxel(request.Query.Start)), affectedTiles) ||
+            std::ranges::any_of(request.Query.Destinations, [&](const auto destination) {
+                return Impl_->GraphTileAffected(request.Query.Profile, ToTile(ToVoxel(destination)), affectedTiles);
+            });
+        const auto topologyAffected =
+            (request.Source && (Impl_->ComponentAffected(*request.Source, affectedTiles) ||
+                                invalidatedSearches.contains(*request.Source))) ||
+            std::ranges::any_of(request.Goals, [&](const auto &goal) {
+                return goal && Impl_->ComponentAffected(*goal, affectedTiles);
+            });
+        if (!endpointAffected && !topologyAffected) continue;
         std::ranges::fill(request.Result->Destinations, NavigationApi::ReachabilityState::Pending);
         request.Source.reset();
         std::ranges::fill(request.Goals, std::nullopt);
@@ -1528,13 +1702,31 @@ void Planner::Invalidate(const std::span<const VoxelApi::Region> regions)
         request.Initialized = false;
     }
     for (auto &request : Impl_->Requests)
-        if (request.State == NavigationApi::PlanState::Pending)
-        {
-            request.State = NavigationApi::PlanState::Unreachable;
-            request.SearchState.reset();
-        }
-    Impl_->ActiveRequests.clear();
-    Impl_->ActiveCursor = 0;
+    {
+        if (request.State != NavigationApi::PlanState::Pending) continue;
+        const auto endpointAffected =
+            Impl_->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Start)), affectedTiles) ||
+            Impl_->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Goal)), affectedTiles);
+        const auto topologyAffected =
+            (request.ReachabilitySource &&
+             (Impl_->ComponentAffected(*request.ReachabilitySource, affectedTiles) ||
+              invalidatedSearches.contains(*request.ReachabilitySource))) ||
+            (request.ReachabilityGoal && Impl_->ComponentAffected(*request.ReachabilityGoal, affectedTiles)) ||
+            (request.SearchState &&
+             std::ranges::any_of(request.SearchState->Records, [&](const auto &record) {
+                 return Impl_->GraphTileAffected(request.SearchState->Profile, ToTile(record.first), affectedTiles);
+             }));
+        if (!endpointAffected && !topologyAffected) continue;
+        Impl_->RemoveActive(request.Id);
+        request.SearchState.reset();
+        request.PendingPlan = request.Plan;
+        request.ProjectedStart.reset();
+        request.ProjectedGoal.reset();
+        request.ReachabilitySource.reset();
+        request.ReachabilityGoal.reset();
+        Impl_->QueueProjection(request.Plan.Start, *Impl_->Profile(request.Plan.Profile));
+        Impl_->QueueProjection(request.Plan.Goal, *Impl_->Profile(request.Plan.Profile));
+    }
 }
 
 void Planner::Prepare(const std::span<const VoxelApi::Region> regions)

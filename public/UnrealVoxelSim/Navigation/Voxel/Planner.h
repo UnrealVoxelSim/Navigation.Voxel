@@ -22,13 +22,15 @@ class Planner final : public UnrealVoxelSim::Navigation::Api::IPlanner,
     static constexpr std::size_t DefaultMaximumExpansionsPerRequest = 65'536;
     static constexpr std::size_t DefaultReachabilityComponentExpansionsPerTick = 32;
     static constexpr std::size_t DefaultTileBuildsPerTopologyUpdate = 1;
+    static constexpr std::size_t DefaultComponentCellsPerTick = 256;
 
     Planner(const UnrealVoxelSim::Navigation::Voxel::Api::IEnvironment &environment,
             std::span<const Movement::Api::GroundedProfile> profiles,
             std::size_t expansionsPerTick = DefaultExpansionsPerTick,
             std::size_t maximumExpansionsPerRequest = DefaultMaximumExpansionsPerRequest,
             std::size_t reachabilityComponentExpansionsPerTick = DefaultReachabilityComponentExpansionsPerTick,
-            std::size_t tileBuildsPerTopologyUpdate = DefaultTileBuildsPerTopologyUpdate);
+            std::size_t tileBuildsPerTopologyUpdate = DefaultTileBuildsPerTopologyUpdate,
+            std::size_t componentCellsPerTick = DefaultComponentCellsPerTick);
     ~Planner() override;
     Planner(const Planner &) = delete;
     Planner &operator=(const Planner &) = delete;
@@ -38,6 +40,8 @@ class Planner final : public UnrealVoxelSim::Navigation::Api::IPlanner,
     void Cancel(UnrealVoxelSim::Navigation::Api::RequestId request) noexcept override;
     void Advance(Simulation::Api::StepContext context) override;
     [[nodiscard]] std::uint64_t CurrentEnvironmentRevision() const noexcept override;
+    [[nodiscard]] bool IsPathCurrent(
+        const UnrealVoxelSim::Navigation::Api::Path &path) const noexcept override;
     [[nodiscard]] UnrealVoxelSim::Navigation::Api::PlanState State(
         UnrealVoxelSim::Navigation::Api::RequestId request) const noexcept override;
     [[nodiscard]] std::shared_ptr<const UnrealVoxelSim::Navigation::Api::Path> ReadPath(
