@@ -1,26 +1,106 @@
 # UnrealVoxelSim.Navigation.Voxel
 
-Deterministic grounded planner over shared profile-keyed 16³ standability tiles. Layer payload is captured through the
-batched `Navigation.Voxel.Api` environment contract; A* never dispatches into a voxel layer per node. Requests advance
-under an exact shared node-expansion budget and use stable integer costs and tie-breaking.
+Deterministic, incremental grounded navigation over a batched voxel-environment projection. `Planner` implements
+`Navigation::Api::IPlanner`, `Navigation::Api::IReachability`, and the preparation, invalidation, and topology-update
+contracts from `Navigation.Voxel.Api`.
 
-V1 uses a cached tile-portal hierarchy to guide weighted eight-way voxel A*. Coarse corridors are shared by profile and
-endpoint tiles; exact searches follow deterministic boundary portals and fall back to an unconstrained search if a coarse
-corridor is insufficient. Adjacent rise and drop limits come from the movement profile. Strict global optimality is
-intentionally not promised.
+V1 supports profile-sized grounded bodies, eight-way horizontal travel, adjacent rises up to `MaximumRise`, and adjacent
+drops up to `MaximumDrop`. It does not jump across gaps. Start and goal positions are continuous; planning projects them
+to nearby standable voxel positions, while returned waypoints convert back to deterministic continuous coordinates.
 
-Grounded transitions validate conservative swept clearance, including launch-column headroom for rises and destination
-shaft clearance for drops. Endpoint standability alone is not considered sufficient.
+## Derived topology
 
-Each standability tile also carries profile-specific directed connectivity components. Component searches are cached by
-source component, shared by path requests and batched reachability queries, and retain directionality for asymmetric rise
-and drop rules. Impossible requests therefore terminate at the component graph without entering fine A*.
+Topology is cached in profile-keyed 16 x 16 x 16 standability tiles. A tile is derived from one batched environment read
+covering the tile plus the profile footprint, body height, rise headroom, and drop shaft dependencies. For every candidate
+foot position it stores:
 
-Cold topology is never constructed by `Planner::Advance`. Region preparation, voxel invalidation, and query demand enqueue
-profile-tile work for the separately scheduled topology updater. The composition root decides when maintenance runs;
-queries remain pending until their immutable tiles are ready. Active query dependencies take priority over background
-preparation, while voxel changes proactively queue affected tiles.
+- whether every footprint cell has supporting voxels beneath it;
+- the vertical occupancy clearance available to the body; and
+- a directed local connectivity component for standable positions.
 
-Topology maintenance, component traversal, incoming-component checks, cold corridor promotion, and fine A* all use
-deterministic, configurable work limits. The fine-search ceiling is also configurable; reaching it fails the request
-deterministically instead of allowing an order to monopolize the simulation or presentation thread.
+Different body dimensions and rise/drop capabilities therefore produce different topology while sharing the same
+navigation-oriented environment projection. Derived tiles, component edges, incoming edges, coarse corridors, and
+component searches are reconstructible caches, never authoritative world state.
+
+`Prepare(regions)` queues affected tiles for background construction. `Invalidate(regions)` increments the environment
+revision, removes every tile whose dependency region intersects a change, clears dependent graph/search caches, and
+queues affected replacements. Active followers detect the new revision and replan.
+
+`UpdateTopology` builds a configurable number of tiles per call. Tiles required by active queries are urgent and take
+priority; background preparation yields while navigation demand exists. `Advance` never synchronously builds a tile, so
+cold requests pause for deterministic simulation steps instead of causing an unbounded presentation-frame stall.
+
+## Transition rules
+
+A node represents a standable foot position, not an empty voxel in isolation. For each of the eight horizontal neighbor
+directions, the planner tests same-height travel, then the nearest allowed rise, then the nearest allowed drop.
+
+A transition is accepted only when:
+
+- the destination supports the whole profile footprint and has at least body-height occupancy clearance;
+- diagonal movement also has both orthogonal side positions standable, preventing corner cutting;
+- a rise has enough clearance above the launch column for the swept body; and
+- a drop has enough destination-column clearance for the full descent shaft.
+
+These conservative swept-clearance checks reject passages whose endpoints look valid but which continuous movement
+cannot traverse. Movement primitives on the resulting waypoints label level traversal, rise, and drop; the movement
+domain remains responsible for actual jump, gravity, and collision integration.
+
+## Hierarchical planning
+
+Path requests move through bounded stages:
+
+1. Project the continuous endpoints to profile-valid standable positions once their tiles are available.
+2. Locate their directed profile-tile components.
+3. Reuse or incrementally expand a source-component reachability search. An impossible request terminates here without
+   entering fine A*.
+4. Build or reuse a bounded tile-level portal corridor between endpoint tiles.
+5. Run weighted eight-way voxel A* inside the corridor, using stable integer costs and deterministic tie-breaking.
+6. If corridor restriction is insufficient, retry the fine search without the restriction.
+7. Publish an immutable revision-tagged `Path`.
+
+Fine search uses cardinal cost `1000`, diagonal cost `1414`, a vertical penalty, and a 1.25 weighted heuristic. The
+current planner does not apply `Navigation.Voxel.Api::Cell::TraversalCost`. Strict global optimality is intentionally not
+promised; bounded latency, deterministic behavior, and shared work are favored for large entity counts and distances.
+
+## Reachability
+
+Reachability queries project one source and many destinations, then use the same directed component graph and cached
+source searches as path requests. Results are updated independently as components are discovered. Direction matters:
+with asymmetric rise and drop limits, A reaching B does not imply B can reach A.
+
+Source-component searches are shared across simultaneous and later path/reachability requests for the same profile and
+environment revision. Incoming-component checks can prove isolated goals unreachable early. This makes AI feasibility
+queries substantially cheaper than constructing a full path per candidate.
+
+## Deterministic work scheduling
+
+All progression is driven by explicit simulation calls and integer work counts, never elapsed wall-clock time. Constructor
+parameters configure the principal budgets:
+
+- `expansionsPerTick`: shared fine-search node expansions;
+- `maximumExpansionsPerRequest`: deterministic per-request failure ceiling;
+- `reachabilityComponentExpansionsPerTick`: shared component-graph work; and
+- `tileBuildsPerTopologyUpdate`: derived-topology construction work.
+
+Defaults are public `constexpr` values on `Planner`. Active fine searches and component searches are advanced in stable
+round-robin order. Coarse work, endpoint promotion, and cold-cache construction also have deterministic internal limits.
+Changing simulation pacing or time compression changes how quickly ticks are presented, not which budget a tick receives
+or the simulation result for the same ordered inputs.
+
+The current implementation is thread-affine. Construct it and invoke all interfaces on one simulation thread; background
+workers must operate on immutable snapshots and return through a future deterministic commit boundary rather than mutate
+planner state directly.
+
+## API usage
+
+- Task executors and input adapters should use `Navigation.Api::ICommandSink` and `IExecutionReader`, normally provided
+  by `Navigation.Following`.
+- AI systems needing feasibility should use `Navigation.Api::IReachability` and tolerate pending results.
+- Following implementations use `Navigation.Api::IPlanner` and immutable `Path` values.
+- World adapters call `Prepare` after loading relevant regions and send committed changes through `Invalidate`.
+- The composition root calls `UpdateTopology` and `Advance` at explicit positions in its tick pipeline.
+
+The environment and movement profiles must outlive `Planner`. Request identifiers must be valid and unique while their
+results are retained. Unknown profiles and duplicate identifiers are rejected synchronously; expensive work remains
+asynchronous.
