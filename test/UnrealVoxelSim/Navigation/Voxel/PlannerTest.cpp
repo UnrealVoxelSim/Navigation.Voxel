@@ -12,7 +12,11 @@ namespace
 class Terrain final : public Api::IEnvironment
 {
   public:
-    [[nodiscard]] UnrealVoxelSim::Voxel::Api::Region Bounds() const noexcept override { return {{-64, -64, -16}, {64, 64, 32}}; }
+    [[nodiscard]] UnrealVoxelSim::Voxel::Api::Region Bounds() const noexcept override
+    {
+        ++BoundsReads;
+        return {{-64, -64, -16}, {64, 64, 32}};
+    }
     [[nodiscard]] std::expected<void, UnrealVoxelSim::Voxel::Api::ReadError> ReadRegion(
         const UnrealVoxelSim::Voxel::Api::Region region, const std::span<Api::Cell> output) const override
     {
@@ -43,6 +47,7 @@ class Terrain final : public Api::IEnvironment
     bool DropCliff{};
     bool VerticalTileCliff{};
     bool HeadBlockedPassage{};
+    mutable std::size_t BoundsReads{};
     mutable std::size_t RegionReads{};
 };
 
@@ -60,6 +65,22 @@ void Advance(Planner &planner, const std::uint64_t tick)
                                                 Simulation::Api::StandardStepDuration};
     planner.UpdateTopology(context);
     planner.Advance(context);
+}
+
+TEST(PlannerTest, BoundsPendingEndpointPollingPerTick)
+{
+    Terrain terrain;
+    const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
+    Planner planner{terrain, profiles, 1};
+    for (std::uint64_t index = 1; index <= 10'000; ++index)
+        ASSERT_TRUE(planner.Begin({Navigation::Api::RequestId{index}, profiles[0].Id, Location(0, 0, 1),
+                                   Location(48, 48, 1)}));
+
+    terrain.BoundsReads = 0;
+    planner.Advance({Simulation::Api::TickIndex{0}, Simulation::Api::StandardStepDuration});
+
+    EXPECT_GT(terrain.BoundsReads, 0U);
+    EXPECT_LT(terrain.BoundsReads, 1'100U);
 }
 
 TEST(PlannerTest, FindsDeterministicEightWayPathAcrossFlatTerrain)
@@ -83,6 +104,24 @@ TEST(PlannerTest, FindsDeterministicEightWayPathAcrossFlatTerrain)
     EXPECT_EQ(path->EnvironmentRevision, 1U);
     EXPECT_NE(path->ValidationToken, 0U);
     EXPECT_TRUE(planner.IsPathCurrent(*path));
+}
+
+TEST(PlannerTest, PathPlanningDoesNotFloodUnrelatedReachabilityTopology)
+{
+    Terrain terrain;
+    const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
+    Planner planner{terrain, profiles, 4096, Planner::DefaultMaximumExpansionsPerRequest,
+                    Planner::DefaultReachabilityComponentExpansionsPerTick, 64};
+    ASSERT_TRUE(planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id,
+                               Location(-48, 0, 1), Location(48, 0, 1)}));
+
+    for (std::uint64_t tick = 0; tick < 200 &&
+                                 planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending;
+         ++tick)
+        Advance(planner, tick);
+
+    EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Complete);
+    EXPECT_LT(terrain.RegionReads, 128U);
 }
 
 TEST(PlannerTest, InvalidatesOnlyPathsNearChangedVoxels)
@@ -155,6 +194,7 @@ TEST(PlannerTest, RejectsRiseWithoutLaunchHeadroom)
 TEST(PlannerTest, HonorsDeterministicExpansionBudget)
 {
     Terrain terrain;
+    terrain.Ledge = true;
     const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
     Planner planner{terrain, profiles, 1};
     ASSERT_TRUE(planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(20, 0, 1)}));
@@ -377,7 +417,8 @@ TEST(TopologyTest, PlannerAdvanceNeverBuildsColdTopologySynchronously)
     EXPECT_EQ(terrain.RegionReads, 0U);
     EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Pending);
     planner.UpdateTopology({Simulation::Api::TickIndex{1}, Simulation::Api::StandardStepDuration});
-    EXPECT_EQ(terrain.RegionReads, 1U);
+    EXPECT_GT(terrain.RegionReads, 0U);
+    EXPECT_LE(terrain.RegionReads, Planner::DefaultTileBuildsPerTopologyUpdate);
 }
 
 TEST(TopologyTest, VoxelInvalidationProactivelyQueuesRebuild)

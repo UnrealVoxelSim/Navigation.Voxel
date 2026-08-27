@@ -30,6 +30,13 @@ followers replan only when a changed region can affect their path.
 `UpdateTopology` builds a configurable number of tiles per call. Tiles required by active queries are urgent and take
 priority; background preparation yields while navigation demand exists. `Advance` never synchronously builds a tile, so
 cold requests pause for deterministic simulation steps instead of causing an unbounded presentation-frame stall.
+The default topology budget builds sixteen tiles per update. Unsupported candidate positions bypass occupancy-clearance
+scanning, keeping empty and sparse tiles cheap enough to process in batches. A second deterministic standable-position
+budget prevents a batch containing many populated walking surfaces from producing the same spike as sixteen worst-case
+tiles.
+New path requests also enqueue a narrow deterministic topology hint around the direct tile route when both endpoints are
+at plausible grounded elevations. This removes the one-tile-at-a-time discovery chain without treating the hint as a
+valid path; coarse and fine searches still validate all movement against constructed topology.
 
 ## Transition rules
 
@@ -52,13 +59,19 @@ domain remains responsible for actual jump, gravity, and collision integration.
 Path requests move through bounded stages:
 
 1. Project the continuous endpoints to profile-valid standable positions once their tiles are available.
-2. Locate their directed profile-tile components.
-3. Reuse or incrementally expand a source-component reachability search. An impossible request terminates here without
-   entering fine A*.
-4. Build or reuse a bounded tile-level portal corridor between endpoint tiles.
-5. Run weighted eight-way voxel A* inside the corridor, using stable integer costs and deterministic tie-breaking.
-6. If corridor restriction is insufficient, retry the fine search without the restriction.
-7. Publish an immutable revision-tagged `Path` with an opaque dependency-validation token.
+2. Build or reuse a bounded tile-level portal corridor between endpoint tiles.
+3. Run weighted eight-way voxel A* inside the corridor, using stable integer costs and deterministic tie-breaking.
+4. If corridor restriction is insufficient, retry the fine search without the restriction.
+5. Publish an immutable revision-tagged `Path` with an opaque dependency-validation token.
+
+Ordinary path requests do not run a separate component-reachability flood before corridor construction. That duplicated
+most of the path search for every distinct starting component and could materialize large areas unrelated to the route.
+The bounded coarse and fine searches already determine whether a path exists.
+
+When the projected endpoints share an elevation, the planner first validates the deterministic direct route using the
+same grounded transition rules as A*. Clear routes publish immediately without allocating per-node A* records or
+constructing a coarse corridor. A missing topology dependency keeps the request pending; a genuine obstruction falls
+through to the hierarchical planner.
 
 Fine search uses cardinal cost `1000`, diagonal cost `1414`, a vertical penalty, and a 1.25 weighted heuristic. The
 current planner does not apply `Navigation.Voxel.Api::Cell::TraversalCost`. Strict global optimality is intentionally not
@@ -66,8 +79,8 @@ promised; bounded latency, deterministic behavior, and shared work are favored f
 
 ## Reachability
 
-Reachability queries project one source and many destinations, then use the same directed component graph and cached
-source searches as path requests. Results are updated independently as components are discovered. Direction matters:
+Reachability queries project one source and many destinations, then use the directed component graph and cached source
+searches. Results are updated independently as components are discovered. Direction matters:
 with asymmetric rise and drop limits, A reaching B does not imply B can reach A.
 
 Source-component searches are shared across simultaneous and later path/reachability requests for the same profile.
@@ -92,9 +105,18 @@ round-robin order. Coarse work, endpoint promotion, and cold-cache construction 
 Changing simulation pacing or time compression changes how quickly ticks are presented, not which budget a tick receives
 or the simulation result for the same ordered inputs.
 
+Path endpoint admission has a separate deterministic budget from component reachability. Up to 1,024 pending path
+requests and 2,048 cached endpoint projections are processed per tick, so low reachability budgets cannot accidentally
+turn a large pawn population into a many-second admission queue.
+
 The current implementation is thread-affine. Construct it and invoke all interfaces on one simulation thread; background
 workers must operate on immutable snapshots and return through a future deterministic commit boundary rather than mutate
 planner state directly.
+
+The constructor overload accepting `Profiling::Api::IRecorder &` exposes batch-level zones for invalidation, bounded
+tile construction, endpoint projection, component reachability, corridor resolution, and fine path expansion. The
+original constructor owns a no-op recorder for compatibility. Profiling does not change deterministic work budgets or
+add zones per voxel, pawn, request, or expanded node.
 
 ## API usage
 

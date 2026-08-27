@@ -2,6 +2,8 @@
 
 #include "UnrealVoxelSim/Movement/Api/Scalar.h"
 #include "UnrealVoxelSim/Navigation/Api/MovementPrimitiveId.h"
+#include "UnrealVoxelSim/Profiling/Api/Macros.h"
+#include "UnrealVoxelSim/Profiling/Api/NullRecorder.h"
 #include "UnrealVoxelSim/Voxel/Api/Position.h"
 
 #include <algorithm>
@@ -27,6 +29,7 @@ namespace
 {
 namespace NavigationApi = UnrealVoxelSim::Navigation::Api;
 namespace EnvironmentApi = UnrealVoxelSim::Navigation::Voxel::Api;
+namespace ProfilingApi = UnrealVoxelSim::Profiling::Api;
 namespace VoxelApi = UnrealVoxelSim::Voxel::Api;
 
 constexpr std::int32_t TileEdge = 16;
@@ -36,7 +39,10 @@ constexpr std::uint64_t DiagonalCost = 1414;
 constexpr std::size_t MinimumCoarseExpansions = 64;
 constexpr std::size_t MaximumCoarseExpansions = 512;
 constexpr std::size_t CoarseExpansionDistanceFactor = 32;
-constexpr std::size_t PlanPromotionsPerTick = 64;
+constexpr std::size_t PlanPromotionsPerTick = 256;
+constexpr std::size_t PlanEndpointChecksPerTick = 1024;
+constexpr std::size_t PlanEndpointProjectionsPerTick = 2048;
+constexpr std::size_t TopologyStandablePositionsPerUpdate = 1536;
 constexpr std::size_t ColdCorridorBuildsPerTick = 1;
 constexpr std::size_t ColdIncomingComponentBuildsPerTick = 1;
 constexpr std::size_t FineExpansionsAfterColdCorridor = 128;
@@ -81,6 +87,7 @@ struct Tile final
     std::array<std::uint16_t, TileCellCount> ComponentByCell{};
     std::vector<std::vector<VoxelApi::Position>> ComponentCells;
     std::vector<std::vector<std::uint16_t>> LocalEdges;
+    std::size_t StandablePositions{};
 };
 
 [[nodiscard]] constexpr std::int32_t FloorDiv(const std::int32_t value) noexcept
@@ -290,16 +297,25 @@ struct PathValidation final
     bool Current{true};
 };
 
+enum class DirectPathState
+{
+    Pending,
+    Blocked,
+    Complete,
+};
+
 } // namespace
 
 class Planner::Impl final
 {
   public:
     Impl(const EnvironmentApi::IEnvironment &environment, std::span<const Movement::Api::GroundedProfile> profiles,
+         ProfilingApi::IRecorder *profiling,
          const std::size_t expansionsPerTick, const std::size_t maximumExpansionsPerRequest,
          const std::size_t reachabilityComponentExpansionsPerTick,
          const std::size_t tileBuildsPerTopologyUpdate, const std::size_t componentCellsPerTick)
-        : Environment(environment), Profiles(profiles.begin(), profiles.end()), ExpansionsPerTick(expansionsPerTick),
+        : Environment(environment), Profiling(profiling ? *profiling : NullProfiling),
+          Profiles(profiles.begin(), profiles.end()), ExpansionsPerTick(expansionsPerTick),
            MaximumExpansionsPerRequest(maximumExpansionsPerRequest),
            ReachabilityComponentExpansionsPerTick(reachabilityComponentExpansionsPerTick),
            TileBuildsPerTopologyUpdate(tileBuildsPerTopologyUpdate), ComponentCellsPerTick(componentCellsPerTick)
@@ -371,6 +387,7 @@ class Planner::Impl final
 
     [[nodiscard]] Tile BuildTile(const TileKey key, const Movement::Api::GroundedProfile &profile)
     {
+        UNREALVOXELSIM_PROFILE_ZONE(Profiling, "Build navigation tile");
         const auto tileRegion = TileRegion(key);
         const auto bounds = Environment.Bounds();
         const auto leftX = static_cast<std::int32_t>(profile.Width / 2);
@@ -390,6 +407,10 @@ class Planner::Impl final
         if (!count) return tile;
         std::vector<EnvironmentApi::Cell> cells(*count);
         if (!Environment.ReadRegion(dependency, cells)) return tile;
+        tile.ComponentByCell.fill(NoComponent);
+        if (std::ranges::none_of(cells, &EnvironmentApi::Cell::SupportsGroundedBody) ||
+            std::ranges::all_of(cells, &EnvironmentApi::Cell::BlocksOccupancy))
+            return tile;
 
         const auto sample = [&](const VoxelApi::Position position) {
             if (!dependency.Contains(position)) return EnvironmentApi::Cell{true, false, 1000};
@@ -413,6 +434,13 @@ class Planner::Impl final
                                 supported = false;
                                 break;
                             }
+                    const auto index = LocalIndex({x, y, z}, key);
+                    if (!supported)
+                    {
+                        tile.Standable[index] = 0;
+                        tile.Clearance[index] = 0;
+                        continue;
+                    }
                     const auto maximumClearance = static_cast<std::int32_t>(profile.Height) +
                                                   static_cast<std::int32_t>(
                                                       std::max(profile.MaximumRise, profile.MaximumDrop));
@@ -430,12 +458,11 @@ class Planner::Impl final
                         if (!clear) break;
                         ++clearance;
                     }
-                    const auto index = LocalIndex({x, y, z}, key);
                     tile.Clearance[index] = clearance;
                     tile.Standable[index] = supported && clearance >= profile.Height ? 1 : 0;
+                    if (tile.Standable[index] != 0) ++tile.StandablePositions;
                 }
 
-        tile.ComponentByCell.fill(NoComponent);
         const auto localNeighbor = [&](const VoxelApi::Position current, const int dx,
                                        const int dy) -> std::optional<VoxelApi::Position> {
             const auto standable = [&](const VoxelApi::Position position) {
@@ -563,10 +590,50 @@ class Planner::Impl final
         }
     }
 
-    [[nodiscard]] bool ProjectionReady(const Movement::Api::Position position,
-                                       const Movement::Api::GroundedProfile &profile)
+    template <typename Visitor>
+    void VisitRouteHint(const Movement::Api::Position start, const Movement::Api::Position goal,
+                        const Movement::Api::GroundedProfile &profile, Visitor &&visitor) const
     {
-        QueueProjection(position, profile);
+        const auto startVoxel = ToVoxel(start);
+        const auto goalVoxel = ToVoxel(goal);
+        const auto startTile = ToTile(startVoxel);
+        const auto goalTile = ToTile(goalVoxel);
+        if (std::abs(static_cast<std::int64_t>(goalTile.Z) - startTile.Z) > 1) return;
+
+        const auto deltaX = static_cast<std::int64_t>(goalTile.X) - startTile.X;
+        const auto deltaY = static_cast<std::int64_t>(goalTile.Y) - startTile.Y;
+        const auto steps = static_cast<std::size_t>(std::max(std::abs(deltaX), std::abs(deltaY)));
+        const auto interpolate = [](const std::int32_t from, const std::int32_t to,
+                                    const std::size_t index, const std::size_t count) {
+            if (count == 0) return from;
+            const auto delta = static_cast<std::int64_t>(to) - from;
+            return static_cast<std::int32_t>(static_cast<std::int64_t>(from) +
+                                             delta * static_cast<std::int64_t>(index) /
+                                                 static_cast<std::int64_t>(count));
+        };
+        for (std::size_t index = 0; index <= steps; ++index)
+        {
+            const auto x = interpolate(startTile.X, goalTile.X, index, steps);
+            const auto y = interpolate(startTile.Y, goalTile.Y, index, steps);
+            const auto footZ = interpolate(startVoxel.Z, goalVoxel.Z, index, steps);
+            const auto minimumZ = FloorDiv(footZ - static_cast<std::int32_t>(profile.MaximumDrop));
+            const auto maximumZ = FloorDiv(footZ + static_cast<std::int32_t>(profile.MaximumRise));
+            for (auto z = minimumZ; z <= maximumZ; ++z)
+                for (std::int32_t offsetY = -1; offsetY <= 1; ++offsetY)
+                    for (std::int32_t offsetX = -1; offsetX <= 1; ++offsetX)
+                        visitor(ProfileTileKey{profile.Id, {x + offsetX, y + offsetY, z}});
+        }
+    }
+
+    void QueueRouteHint(const Movement::Api::Position start, const Movement::Api::Position goal,
+                        const Movement::Api::GroundedProfile &profile)
+    {
+        VisitRouteHint(start, goal, profile, [&](const ProfileTileKey key) { QueueTile(key); });
+    }
+
+    [[nodiscard]] bool ProjectionReady(const Movement::Api::Position position,
+                                       const Movement::Api::GroundedProfile &profile) const
+    {
         const auto origin = ToVoxel(position);
         if (!IsTileReady({profile.Id, ToTile(origin)})) return false;
         const auto verticalLimit = std::max<std::int32_t>(profile.MaximumDrop, profile.MaximumRise + 2);
@@ -579,7 +646,9 @@ class Planner::Impl final
 
     void UpdateTopology()
     {
-        for (std::size_t built = 0; built < TileBuildsPerTopologyUpdate;)
+        std::size_t standablePositions{};
+        for (std::size_t built = 0;
+             built < TileBuildsPerTopologyUpdate && standablePositions < TopologyStandablePositionsPerUpdate;)
         {
             std::optional<ProfileTileKey> next;
             while (!UrgentTileBuildOrder.empty() && !next)
@@ -605,10 +674,15 @@ class Planner::Impl final
             PendingTileBuilds.erase(key);
             UrgentTileBuilds.erase(key);
             const auto *profile = Profile(key.Profile);
-            if (profile && !Tiles.contains(key)) Tiles.emplace(key, BuildTile(key.Tile, *profile));
+            if (profile && !Tiles.contains(key))
+            {
+                const auto [tile, inserted] = Tiles.emplace(key, BuildTile(key.Tile, *profile));
+                if (inserted) standablePositions += tile->second.StandablePositions;
+            }
             TopologyBuiltSincePlannerAdvance = true;
             ++built;
         }
+        UNREALVOXELSIM_PROFILE_PLOT(Profiling, "Planner topology standable positions", standablePositions);
     }
 
     void QueueAffectedRegions(const std::span<const VoxelApi::Region> regions)
@@ -1140,19 +1214,9 @@ class Planner::Impl final
         return std::max(direct, guided);
     }
 
-    void Finish(Request &request, const VoxelApi::Position goal)
+    void PublishPath(Request &request, const std::span<const VoxelApi::Position> positions,
+                     const Movement::Api::ProfileId profile)
     {
-        auto positions = std::vector<VoxelApi::Position>{goal};
-        auto current = goal;
-        while (true)
-        {
-            const auto iterator = request.SearchState->Records.find(current);
-            if (iterator == request.SearchState->Records.end() || !iterator->second.HasParent) break;
-            current = iterator->second.Parent;
-            positions.push_back(current);
-        }
-        std::ranges::reverse(positions);
-        const auto profile = request.SearchState->Profile;
         auto path = std::make_shared<NavigationApi::Path>();
         path->EnvironmentRevision = Revision;
         path->ValidationToken = NextPathValidationToken++;
@@ -1170,6 +1234,86 @@ class Planner::Impl final
         request.Path = std::move(path);
         request.State = NavigationApi::PlanState::Complete;
         request.SearchState.reset();
+    }
+
+    void Finish(Request &request, const VoxelApi::Position goal)
+    {
+        auto positions = std::vector<VoxelApi::Position>{goal};
+        auto current = goal;
+        while (true)
+        {
+            const auto iterator = request.SearchState->Records.find(current);
+            if (iterator == request.SearchState->Records.end() || !iterator->second.HasParent) break;
+            current = iterator->second.Parent;
+            positions.push_back(current);
+        }
+        std::ranges::reverse(positions);
+        PublishPath(request, positions, request.SearchState->Profile);
+    }
+
+    [[nodiscard]] DirectPathState TryDirectPath(Request &request,
+                                                const Movement::Api::GroundedProfile &profile)
+    {
+        assert(request.PendingPlan && request.ProjectedStart && request.ProjectedGoal);
+        if (request.ProjectedStart->Z != request.ProjectedGoal->Z) return DirectPathState::Blocked;
+
+        const auto goal = *request.ProjectedGoal;
+        const auto maximumSteps = static_cast<std::size_t>(std::max(
+            std::abs(static_cast<std::int64_t>(goal.X) - request.ProjectedStart->X),
+            std::abs(static_cast<std::int64_t>(goal.Y) - request.ProjectedStart->Y)));
+        auto current = *request.ProjectedStart;
+        std::set<TileKey> dependencies{ToTile(current)};
+        std::array<std::optional<std::pair<ProfileTileKey, const Tile *>>, 8> tileCache;
+        std::size_t nextCacheEntry{};
+        const auto bounds = Environment.Bounds();
+        const auto standable = [&](const VoxelApi::Position position) -> std::optional<bool> {
+            if (!bounds.Contains(position)) return false;
+            const ProfileTileKey key{profile.Id, ToTile(position)};
+            for (const auto &entry : tileCache)
+                if (entry && entry->first == key)
+                    return entry->second->Standable[LocalIndex(position, key.Tile)] != 0;
+            if (!IsTileReady(key)) return std::nullopt;
+            const auto tile = Tiles.find(key);
+            if (tile == Tiles.end()) return false;
+            tileCache[nextCacheEntry] = std::pair{key, &tile->second};
+            nextCacheEntry = (nextCacheEntry + 1) % tileCache.size();
+            return tile->second.Standable[LocalIndex(position, key.Tile)] != 0;
+        };
+        std::size_t steps{};
+        while (current != goal)
+        {
+            const auto sign = [](const std::int32_t value) { return value < 0 ? -1 : value > 0 ? 1 : 0; };
+            const auto dx = sign(goal.X - current.X);
+            const auto dy = sign(goal.Y - current.Y);
+            if (dx == 0 && dy == 0) return DirectPathState::Blocked;
+            const VoxelApi::Position next{current.X + dx, current.Y + dy, current.Z};
+            const auto nextStandable = standable(next);
+            if (!nextStandable) return DirectPathState::Pending;
+            if (!*nextStandable) return DirectPathState::Blocked;
+            if (dx != 0 && dy != 0)
+            {
+                const auto xSide = standable({current.X + dx, current.Y, current.Z});
+                const auto ySide = standable({current.X, current.Y + dy, current.Z});
+                if (!xSide || !ySide) return DirectPathState::Pending;
+                if (!*xSide || !*ySide) return DirectPathState::Blocked;
+            }
+            current = next;
+            dependencies.insert(ToTile(current));
+            ++steps;
+            if (steps > maximumSteps || current.Z != goal.Z)
+                return DirectPathState::Blocked;
+        }
+        auto path = std::make_shared<NavigationApi::Path>();
+        path->EnvironmentRevision = Revision;
+        path->ValidationToken = NextPathValidationToken++;
+        path->Waypoints.push_back({ToContinuous(*request.ProjectedStart), NavigationApi::StandardPrimitives::Traverse});
+        if (*request.ProjectedStart != goal)
+            path->Waypoints.push_back({ToContinuous(goal), NavigationApi::StandardPrimitives::Traverse});
+        PathValidations.emplace(path->ValidationToken, PathValidation{profile.Id, std::move(dependencies)});
+        request.Path = std::move(path);
+        request.State = NavigationApi::PlanState::Complete;
+        request.SearchState.reset();
+        return DirectPathState::Complete;
     }
 
     [[nodiscard]] bool PositionDependenciesReady(const VoxelApi::Position current,
@@ -1277,10 +1421,15 @@ class Planner::Impl final
 
     void InitializePendingTopology()
     {
-        auto remaining = ReachabilityComponentExpansionsPerTick;
-        for (auto &request : Requests)
+        auto remainingPlanProjections = PlanEndpointProjectionsPerTick;
+        const auto maximumChecks = std::min(PlanEndpointChecksPerTick, Requests.size());
+        std::size_t checked{};
+        while (remainingPlanProjections != 0 && checked < maximumChecks && !Requests.empty())
         {
-            if (remaining == 0) break;
+            if (PendingEndpointCursor >= Requests.size()) PendingEndpointCursor = 0;
+            auto &request = Requests[PendingEndpointCursor];
+            PendingEndpointCursor = (PendingEndpointCursor + 1) % Requests.size();
+            ++checked;
             if (!request.PendingPlan) continue;
             const auto *profile = Profile(request.PendingPlan->Profile);
             assert(profile != nullptr);
@@ -1288,7 +1437,7 @@ class Planner::Impl final
             {
                 if (!ProjectionReady(request.PendingPlan->Start, *profile)) continue;
                 request.ProjectedStart = Project(request.PendingPlan->Start, *profile);
-                --remaining;
+                --remainingPlanProjections;
                 if (!request.ProjectedStart)
                 {
                     request.State = NavigationApi::PlanState::Unreachable;
@@ -1296,12 +1445,12 @@ class Planner::Impl final
                     continue;
                 }
             }
-            if (remaining == 0) break;
+            if (remainingPlanProjections == 0) break;
             if (!request.ProjectedGoal)
             {
                 if (!ProjectionReady(request.PendingPlan->Goal, *profile)) continue;
                 request.ProjectedGoal = Project(request.PendingPlan->Goal, *profile);
-                --remaining;
+                --remainingPlanProjections;
                 if (!request.ProjectedGoal)
                 {
                     request.State = NavigationApi::PlanState::Unreachable;
@@ -1309,17 +1458,10 @@ class Planner::Impl final
                     continue;
                 }
             }
-            request.ReachabilitySource = ComponentAt(*request.ProjectedStart, *profile);
-            request.ReachabilityGoal = ComponentAt(*request.ProjectedGoal, *profile);
-            if (!request.ReachabilitySource || !request.ReachabilityGoal)
-            {
-                request.State = NavigationApi::PlanState::Unreachable;
-                request.PendingPlan.reset();
-                continue;
-            }
-            EnsureComponentSearch(*request.ReachabilitySource);
         }
+        UNREALVOXELSIM_PROFILE_PLOT(Profiling, "Planner endpoint checks", checked);
 
+        auto remaining = ReachabilityComponentExpansionsPerTick;
         for (auto &request : ReachabilityRequests)
         {
             if (remaining == 0) break;
@@ -1399,27 +1541,18 @@ class Planner::Impl final
         for (auto &request : Requests)
         {
             if (promotionBudget == 0) break;
-            if (!request.PendingPlan || !request.ReachabilitySource || !request.ReachabilityGoal) continue;
-            const auto search = FindComponentSearch(*request.ReachabilitySource);
-            if (search == ComponentSearches.end()) continue;
-            if (!search->Visited.contains(*request.ReachabilityGoal))
-            {
-                if (incomingEmpty(*request.ReachabilityGoal).value_or(false))
-                {
-                    request.State = NavigationApi::PlanState::Unreachable;
-                    request.PendingPlan.reset();
-                    continue;
-                }
-                if (search->Complete)
-                {
-                    request.State = NavigationApi::PlanState::Unreachable;
-                    request.PendingPlan.reset();
-                }
-                continue;
-            }
+            if (!request.PendingPlan || !request.ProjectedStart || !request.ProjectedGoal) continue;
 
             const auto *profile = Profile(request.PendingPlan->Profile);
-            assert(profile != nullptr && request.ProjectedStart && request.ProjectedGoal);
+            assert(profile != nullptr);
+            const auto direct = TryDirectPath(request, *profile);
+            if (direct == DirectPathState::Pending) continue;
+            if (direct == DirectPathState::Complete)
+            {
+                request.PendingPlan.reset();
+                --promotionBudget;
+                continue;
+            }
             const CorridorKey corridorKey{profile->Id, ToTile(*request.ProjectedStart), ToTile(*request.ProjectedGoal)};
             const auto corridorCached = Corridors.contains(corridorKey);
             if (!corridorCached && coldCorridorBudget == 0) continue;
@@ -1446,6 +1579,8 @@ class Planner::Impl final
     }
 
     const EnvironmentApi::IEnvironment &Environment;
+    ProfilingApi::NullRecorder NullProfiling;
+    ProfilingApi::IRecorder &Profiling;
     std::vector<Movement::Api::GroundedProfile> Profiles;
     std::size_t ExpansionsPerTick;
     std::size_t MaximumExpansionsPerRequest;
@@ -1470,6 +1605,7 @@ class Planner::Impl final
     std::size_t ActiveComponentCursor{};
     std::vector<ReachabilityRequest> ReachabilityRequests;
     std::vector<Request> Requests;
+    std::size_t PendingEndpointCursor{};
     std::vector<NavigationApi::RequestId> ActiveRequests;
     std::size_t ActiveCursor{};
     std::map<std::uint64_t, PathValidation> PathValidations;
@@ -1483,128 +1619,169 @@ Planner::Planner(const EnvironmentApi::IEnvironment &environment,
                  const std::size_t maximumExpansionsPerRequest,
                  const std::size_t reachabilityComponentExpansionsPerTick,
                  const std::size_t tileBuildsPerTopologyUpdate, const std::size_t componentCellsPerTick)
-    : Impl_(std::make_unique<Impl>(environment, profiles, expansionsPerTick, maximumExpansionsPerRequest,
+    : m_Impl(std::make_unique<Impl>(environment, profiles, nullptr, expansionsPerTick, maximumExpansionsPerRequest,
                                   reachabilityComponentExpansionsPerTick, tileBuildsPerTopologyUpdate,
                                   componentCellsPerTick)) {}
+
+Planner::Planner(const EnvironmentApi::IEnvironment &environment,
+                 const std::span<const Movement::Api::GroundedProfile> profiles,
+                 ProfilingApi::IRecorder &profiling, const std::size_t expansionsPerTick,
+                 const std::size_t maximumExpansionsPerRequest,
+                 const std::size_t reachabilityComponentExpansionsPerTick,
+                 const std::size_t tileBuildsPerTopologyUpdate, const std::size_t componentCellsPerTick)
+    : m_Impl(std::make_unique<Impl>(environment, profiles, &profiling, expansionsPerTick,
+                                  maximumExpansionsPerRequest, reachabilityComponentExpansionsPerTick,
+                                  tileBuildsPerTopologyUpdate, componentCellsPerTick))
+{
+}
 Planner::~Planner() = default;
 
 std::expected<void, NavigationApi::PlanError> Planner::Begin(const NavigationApi::PlanRequest request)
 {
-    Impl_->AssertOwnerThread();
+    m_Impl->AssertOwnerThread();
     if (!request.Request.IsValid()) return std::unexpected{NavigationApi::PlanError::InvalidRequest};
-    const auto *profile = Impl_->Profile(request.Profile);
+    const auto *profile = m_Impl->Profile(request.Profile);
     if (!profile) return std::unexpected{NavigationApi::PlanError::UnknownProfile};
-    const auto iterator = Impl_->FindRequest(request.Request);
-    if (iterator != Impl_->Requests.end() && iterator->Id == request.Request)
+    const auto iterator = m_Impl->FindRequest(request.Request);
+    if (iterator != m_Impl->Requests.end() && iterator->Id == request.Request)
         return std::unexpected{NavigationApi::PlanError::DuplicateRequest};
     Request planned{request.Request};
     planned.Plan = request;
     planned.PendingPlan = request;
-    Impl_->Requests.insert(iterator, std::move(planned));
-    Impl_->QueueProjection(request.Start, *profile);
-    Impl_->QueueProjection(request.Goal, *profile);
+    const auto requestIndex = static_cast<std::size_t>(std::distance(m_Impl->Requests.begin(), iterator));
+    if (requestIndex < m_Impl->PendingEndpointCursor) ++m_Impl->PendingEndpointCursor;
+    m_Impl->Requests.insert(iterator, std::move(planned));
+    m_Impl->QueueProjection(request.Start, *profile);
+    m_Impl->QueueProjection(request.Goal, *profile);
+    m_Impl->QueueRouteHint(request.Start, request.Goal, *profile);
     return {};
 }
 
 void Planner::Cancel(const NavigationApi::RequestId request) noexcept
 {
-    Impl_->AssertOwnerThread();
-    const auto iterator = Impl_->FindRequest(request);
-    if (iterator != Impl_->Requests.end() && iterator->Id == request)
+    m_Impl->AssertOwnerThread();
+    const auto iterator = m_Impl->FindRequest(request);
+    if (iterator != m_Impl->Requests.end() && iterator->Id == request)
     {
-        if (iterator->Path) Impl_->PathValidations.erase(iterator->Path->ValidationToken);
-        Impl_->RemoveActive(request);
-        Impl_->Requests.erase(iterator);
+        if (iterator->Path) m_Impl->PathValidations.erase(iterator->Path->ValidationToken);
+        m_Impl->RemoveActive(request);
+        const auto requestIndex = static_cast<std::size_t>(std::distance(m_Impl->Requests.begin(), iterator));
+        if (requestIndex < m_Impl->PendingEndpointCursor) --m_Impl->PendingEndpointCursor;
+        m_Impl->Requests.erase(iterator);
+        if (m_Impl->PendingEndpointCursor >= m_Impl->Requests.size()) m_Impl->PendingEndpointCursor = 0;
     }
 }
 
 void Planner::Advance(const Simulation::Api::StepContext context)
 {
+    UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Voxel planner advance");
     static_cast<void>(context);
-    Impl_->AssertOwnerThread();
-    Impl_->InitializePendingTopology();
-    const auto topologyBuilt = Impl_->TopologyBuiltSincePlannerAdvance;
-    Impl_->TopologyBuiltSincePlannerAdvance = false;
-    if (!topologyBuilt) Impl_->AdvanceComponentSearches();
-    const auto builtColdCorridor = Impl_->ResolveReachability(!topologyBuilt);
-    std::size_t remaining = builtColdCorridor || topologyBuilt
-                                ? std::min(Impl_->ExpansionsPerTick, FineExpansionsAfterColdCorridor)
-                                : Impl_->ExpansionsPerTick;
-    while (remaining != 0 && !Impl_->ActiveRequests.empty())
+    m_Impl->AssertOwnerThread();
     {
-        if (Impl_->ActiveCursor >= Impl_->ActiveRequests.size()) Impl_->ActiveCursor = 0;
-        const auto requestId = Impl_->ActiveRequests[Impl_->ActiveCursor];
-        const auto iterator = Impl_->FindRequest(requestId);
-        if (iterator == Impl_->Requests.end() || iterator->Id != requestId ||
-            iterator->State != NavigationApi::PlanState::Pending || !iterator->SearchState)
-        {
-            Impl_->RemoveActive(requestId);
-            continue;
-        }
-        if (!Impl_->ExpandOne(*iterator)) break;
-        --remaining;
-        if (iterator->State == NavigationApi::PlanState::Pending)
-            Impl_->ActiveCursor = (Impl_->ActiveCursor + 1) % Impl_->ActiveRequests.size();
-        else
-            Impl_->RemoveActive(requestId);
+        UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Resolve request endpoints");
+        m_Impl->InitializePendingTopology();
     }
+    const auto topologyBuilt = m_Impl->TopologyBuiltSincePlannerAdvance;
+    m_Impl->TopologyBuiltSincePlannerAdvance = false;
+    if (!topologyBuilt)
+    {
+        UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Expand reachability components");
+        m_Impl->AdvanceComponentSearches();
+    }
+    bool builtColdCorridor{};
+    {
+        UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Resolve reachability and corridors");
+        builtColdCorridor = m_Impl->ResolveReachability(!topologyBuilt);
+    }
+    std::size_t remaining = builtColdCorridor || topologyBuilt
+                                ? std::min(m_Impl->ExpansionsPerTick, FineExpansionsAfterColdCorridor)
+                                : m_Impl->ExpansionsPerTick;
+    {
+        UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Expand fine paths");
+        while (remaining != 0 && !m_Impl->ActiveRequests.empty())
+        {
+            if (m_Impl->ActiveCursor >= m_Impl->ActiveRequests.size()) m_Impl->ActiveCursor = 0;
+            const auto requestId = m_Impl->ActiveRequests[m_Impl->ActiveCursor];
+            const auto iterator = m_Impl->FindRequest(requestId);
+            if (iterator == m_Impl->Requests.end() || iterator->Id != requestId ||
+                iterator->State != NavigationApi::PlanState::Pending || !iterator->SearchState)
+            {
+                m_Impl->RemoveActive(requestId);
+                continue;
+            }
+            if (!m_Impl->ExpandOne(*iterator)) break;
+            --remaining;
+            if (iterator->State == NavigationApi::PlanState::Pending)
+                m_Impl->ActiveCursor = (m_Impl->ActiveCursor + 1) % m_Impl->ActiveRequests.size();
+            else
+                m_Impl->RemoveActive(requestId);
+        }
+    }
+    UNREALVOXELSIM_PROFILE_PLOT(m_Impl->Profiling, "Planner requests", m_Impl->Requests.size());
+    UNREALVOXELSIM_PROFILE_PLOT(m_Impl->Profiling, "Planner active fine requests", m_Impl->ActiveRequests.size());
+    UNREALVOXELSIM_PROFILE_PLOT(m_Impl->Profiling, "Planner reachability requests", m_Impl->ReachabilityRequests.size());
+    UNREALVOXELSIM_PROFILE_PLOT(m_Impl->Profiling, "Planner active component searches",
+                               m_Impl->ActiveComponentSearches.size());
+    UNREALVOXELSIM_PROFILE_PLOT(m_Impl->Profiling, "Planner cached navigation tiles", m_Impl->Tiles.size());
+    UNREALVOXELSIM_PROFILE_PLOT(m_Impl->Profiling, "Planner pending navigation tiles",
+                               m_Impl->PendingTileBuilds.size());
 }
 
 std::uint64_t Planner::CurrentEnvironmentRevision() const noexcept
 {
-    Impl_->AssertOwnerThread();
-    return Impl_->Revision;
+    m_Impl->AssertOwnerThread();
+    return m_Impl->Revision;
 }
 
 bool Planner::IsPathCurrent(const NavigationApi::Path &path) const noexcept
 {
-    Impl_->AssertOwnerThread();
-    const auto validation = Impl_->PathValidations.find(path.ValidationToken);
-    return validation != Impl_->PathValidations.end() && validation->second.Current;
+    m_Impl->AssertOwnerThread();
+    const auto validation = m_Impl->PathValidations.find(path.ValidationToken);
+    return validation != m_Impl->PathValidations.end() && validation->second.Current;
 }
 
 NavigationApi::PlanState Planner::State(const NavigationApi::RequestId request) const noexcept
 {
-    Impl_->AssertOwnerThread();
-    const auto iterator = Impl_->FindRequest(request);
-    return iterator != Impl_->Requests.end() && iterator->Id == request ? iterator->State : NavigationApi::PlanState::Cancelled;
+    m_Impl->AssertOwnerThread();
+    const auto iterator = m_Impl->FindRequest(request);
+    return iterator != m_Impl->Requests.end() && iterator->Id == request ? iterator->State : NavigationApi::PlanState::Cancelled;
 }
 
 std::shared_ptr<const NavigationApi::Path> Planner::ReadPath(const NavigationApi::RequestId request) const noexcept
 {
-    Impl_->AssertOwnerThread();
-    const auto iterator = Impl_->FindRequest(request);
-    return iterator != Impl_->Requests.end() && iterator->Id == request ? iterator->Path : nullptr;
+    m_Impl->AssertOwnerThread();
+    const auto iterator = m_Impl->FindRequest(request);
+    return iterator != m_Impl->Requests.end() && iterator->Id == request ? iterator->Path : nullptr;
 }
 
 std::expected<void, NavigationApi::ReachabilityError> Planner::BeginReachability(
     NavigationApi::ReachabilityQuery query)
 {
-    Impl_->AssertOwnerThread();
+    m_Impl->AssertOwnerThread();
     if (!query.Request.IsValid()) return std::unexpected{NavigationApi::ReachabilityError::InvalidRequest};
-    if (!Impl_->Profile(query.Profile)) return std::unexpected{NavigationApi::ReachabilityError::UnknownProfile};
+    if (!m_Impl->Profile(query.Profile)) return std::unexpected{NavigationApi::ReachabilityError::UnknownProfile};
     if (query.Destinations.empty()) return std::unexpected{NavigationApi::ReachabilityError::EmptyDestinations};
-    const auto iterator = Impl_->FindReachabilityRequest(query.Request);
-    if (iterator != Impl_->ReachabilityRequests.end() && iterator->Query.Request == query.Request)
+    const auto iterator = m_Impl->FindReachabilityRequest(query.Request);
+    if (iterator != m_Impl->ReachabilityRequests.end() && iterator->Query.Request == query.Request)
         return std::unexpected{NavigationApi::ReachabilityError::DuplicateRequest};
     auto result = std::make_shared<NavigationApi::ReachabilityResult>();
     result->Request = query.Request;
-    result->EnvironmentRevision = Impl_->Revision;
+    result->EnvironmentRevision = m_Impl->Revision;
     result->Destinations.resize(query.Destinations.size(), NavigationApi::ReachabilityState::Pending);
     ReachabilityRequest request{std::move(query), std::move(result)};
     request.Goals.resize(request.Query.Destinations.size());
-    Impl_->QueueProjection(request.Query.Start, *Impl_->Profile(request.Query.Profile));
+    m_Impl->QueueProjection(request.Query.Start, *m_Impl->Profile(request.Query.Profile));
     for (const auto destination : request.Query.Destinations)
-        Impl_->QueueProjection(destination, *Impl_->Profile(request.Query.Profile));
-    Impl_->ReachabilityRequests.insert(iterator, std::move(request));
+        m_Impl->QueueProjection(destination, *m_Impl->Profile(request.Query.Profile));
+    m_Impl->ReachabilityRequests.insert(iterator, std::move(request));
     return {};
 }
 
 void Planner::CancelReachability(const NavigationApi::ReachabilityRequestId request) noexcept
 {
-    Impl_->AssertOwnerThread();
-    const auto iterator = Impl_->FindReachabilityRequest(request);
-    if (iterator == Impl_->ReachabilityRequests.end() || iterator->Query.Request != request) return;
+    m_Impl->AssertOwnerThread();
+    const auto iterator = m_Impl->FindReachabilityRequest(request);
+    if (iterator == m_Impl->ReachabilityRequests.end() || iterator->Query.Request != request) return;
     for (auto &state : iterator->Result->Destinations) state = NavigationApi::ReachabilityState::Cancelled;
     iterator->Initialized = true;
 }
@@ -1612,19 +1789,20 @@ void Planner::CancelReachability(const NavigationApi::ReachabilityRequestId requ
 std::shared_ptr<const NavigationApi::ReachabilityResult> Planner::ReadReachability(
     const NavigationApi::ReachabilityRequestId request) const noexcept
 {
-    Impl_->AssertOwnerThread();
-    const auto iterator = Impl_->FindReachabilityRequest(request);
-    return iterator != Impl_->ReachabilityRequests.end() && iterator->Query.Request == request ? iterator->Result
+    m_Impl->AssertOwnerThread();
+    const auto iterator = m_Impl->FindReachabilityRequest(request);
+    return iterator != m_Impl->ReachabilityRequests.end() && iterator->Query.Request == request ? iterator->Result
                                                                                                : nullptr;
 }
 
 void Planner::Invalidate(const std::span<const VoxelApi::Region> regions)
 {
-    Impl_->AssertOwnerThread();
+    UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Invalidate navigation topology");
+    m_Impl->AssertOwnerThread();
     if (regions.empty()) return;
-    ++Impl_->Revision;
+    ++m_Impl->Revision;
     std::set<ProfileTileKey> affectedTiles;
-    for (auto tile = Impl_->Tiles.begin(); tile != Impl_->Tiles.end();)
+    for (auto tile = m_Impl->Tiles.begin(); tile != m_Impl->Tiles.end();)
     {
         if (!std::ranges::any_of(regions,
                                  [&](const auto region) { return Intersects(tile->second.Dependency, region); }))
@@ -1633,65 +1811,65 @@ void Planner::Invalidate(const std::span<const VoxelApi::Region> regions)
             continue;
         }
         affectedTiles.insert(tile->first);
-        tile = Impl_->Tiles.erase(tile);
+        tile = m_Impl->Tiles.erase(tile);
     }
-    Impl_->QueueAffectedRegions(regions);
+    m_Impl->QueueAffectedRegions(regions);
 
-    std::erase_if(Impl_->TileNeighborCache, [&](const auto &entry) {
-        return Impl_->GraphTileAffected(entry.first.Profile, entry.first.Tile, affectedTiles);
+    std::erase_if(m_Impl->TileNeighborCache, [&](const auto &entry) {
+        return m_Impl->GraphTileAffected(entry.first.Profile, entry.first.Tile, affectedTiles);
     });
-    std::erase_if(Impl_->Corridors, [&](const auto &entry) {
+    std::erase_if(m_Impl->Corridors, [&](const auto &entry) {
         return std::ranges::any_of(entry.second.Dependencies, [&](const auto tile) {
-            return Impl_->GraphTileAffected(entry.first.Profile, tile, affectedTiles);
+            return m_Impl->GraphTileAffected(entry.first.Profile, tile, affectedTiles);
         });
     });
     const auto componentAffected = [&](const auto &entry) {
-        return Impl_->ComponentAffected(entry.first, affectedTiles);
+        return m_Impl->ComponentAffected(entry.first, affectedTiles);
     };
-    std::erase_if(Impl_->ComponentEdgeCache, componentAffected);
-    std::erase_if(Impl_->ComponentIncomingCache, componentAffected);
-    std::erase_if(Impl_->PendingComponentEdgeBuilds, componentAffected);
-    std::erase_if(Impl_->PendingComponentIncomingBuilds, componentAffected);
+    std::erase_if(m_Impl->ComponentEdgeCache, componentAffected);
+    std::erase_if(m_Impl->ComponentIncomingCache, componentAffected);
+    std::erase_if(m_Impl->PendingComponentEdgeBuilds, componentAffected);
+    std::erase_if(m_Impl->PendingComponentIncomingBuilds, componentAffected);
 
     std::set<ComponentKey> invalidatedSearches;
-    std::erase_if(Impl_->ComponentSearches, [&](const ComponentSearch &search) {
+    std::erase_if(m_Impl->ComponentSearches, [&](const ComponentSearch &search) {
         const auto affected = std::ranges::any_of(search.Visited, [&](const auto component) {
-            return Impl_->ComponentAffected(component, affectedTiles);
+            return m_Impl->ComponentAffected(component, affectedTiles);
         });
         if (affected) invalidatedSearches.insert(search.Source);
         return affected;
     });
-    std::erase_if(Impl_->ActiveComponentSearches,
+    std::erase_if(m_Impl->ActiveComponentSearches,
                   [&](const auto source) { return invalidatedSearches.contains(source); });
-    if (Impl_->ActiveComponentCursor >= Impl_->ActiveComponentSearches.size()) Impl_->ActiveComponentCursor = 0;
+    if (m_Impl->ActiveComponentCursor >= m_Impl->ActiveComponentSearches.size()) m_Impl->ActiveComponentCursor = 0;
 
-    for (auto &entry : Impl_->PathValidations)
+    for (auto &entry : m_Impl->PathValidations)
     {
         auto &validation = entry.second;
         if (validation.Current &&
             std::ranges::any_of(validation.Dependencies, [&](const auto tile) {
-                return Impl_->GraphTileAffected(validation.Profile, tile, affectedTiles);
+                return m_Impl->GraphTileAffected(validation.Profile, tile, affectedTiles);
             }))
             validation.Current = false;
     }
 
-    for (auto &request : Impl_->ReachabilityRequests)
+    for (auto &request : m_Impl->ReachabilityRequests)
     {
         const auto cancelled = std::ranges::all_of(request.Result->Destinations, [](const auto state) {
             return state == NavigationApi::ReachabilityState::Cancelled;
         });
         if (cancelled) continue;
-        request.Result->EnvironmentRevision = Impl_->Revision;
+        request.Result->EnvironmentRevision = m_Impl->Revision;
         const auto endpointAffected =
-            Impl_->GraphTileAffected(request.Query.Profile, ToTile(ToVoxel(request.Query.Start)), affectedTiles) ||
+            m_Impl->GraphTileAffected(request.Query.Profile, ToTile(ToVoxel(request.Query.Start)), affectedTiles) ||
             std::ranges::any_of(request.Query.Destinations, [&](const auto destination) {
-                return Impl_->GraphTileAffected(request.Query.Profile, ToTile(ToVoxel(destination)), affectedTiles);
+                return m_Impl->GraphTileAffected(request.Query.Profile, ToTile(ToVoxel(destination)), affectedTiles);
             });
         const auto topologyAffected =
-            (request.Source && (Impl_->ComponentAffected(*request.Source, affectedTiles) ||
+            (request.Source && (m_Impl->ComponentAffected(*request.Source, affectedTiles) ||
                                 invalidatedSearches.contains(*request.Source))) ||
             std::ranges::any_of(request.Goals, [&](const auto &goal) {
-                return goal && Impl_->ComponentAffected(*goal, affectedTiles);
+                return goal && m_Impl->ComponentAffected(*goal, affectedTiles);
             });
         if (!endpointAffected && !topologyAffected) continue;
         std::ranges::fill(request.Result->Destinations, NavigationApi::ReachabilityState::Pending);
@@ -1700,46 +1878,56 @@ void Planner::Invalidate(const std::span<const VoxelApi::Region> regions)
         request.NextDestination = 0;
         request.SourceResolved = false;
         request.Initialized = false;
+        const auto *profile = m_Impl->Profile(request.Query.Profile);
+        assert(profile != nullptr);
+        m_Impl->QueueProjection(request.Query.Start, *profile);
+        for (const auto destination : request.Query.Destinations)
+            m_Impl->QueueProjection(destination, *profile);
     }
-    for (auto &request : Impl_->Requests)
+    for (auto &request : m_Impl->Requests)
     {
         if (request.State != NavigationApi::PlanState::Pending) continue;
         const auto endpointAffected =
-            Impl_->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Start)), affectedTiles) ||
-            Impl_->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Goal)), affectedTiles);
+            m_Impl->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Start)), affectedTiles) ||
+            m_Impl->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Goal)), affectedTiles);
         const auto topologyAffected =
             (request.ReachabilitySource &&
-             (Impl_->ComponentAffected(*request.ReachabilitySource, affectedTiles) ||
+             (m_Impl->ComponentAffected(*request.ReachabilitySource, affectedTiles) ||
               invalidatedSearches.contains(*request.ReachabilitySource))) ||
-            (request.ReachabilityGoal && Impl_->ComponentAffected(*request.ReachabilityGoal, affectedTiles)) ||
+            (request.ReachabilityGoal && m_Impl->ComponentAffected(*request.ReachabilityGoal, affectedTiles)) ||
             (request.SearchState &&
              std::ranges::any_of(request.SearchState->Records, [&](const auto &record) {
-                 return Impl_->GraphTileAffected(request.SearchState->Profile, ToTile(record.first), affectedTiles);
+                 return m_Impl->GraphTileAffected(request.SearchState->Profile, ToTile(record.first), affectedTiles);
              }));
         if (!endpointAffected && !topologyAffected) continue;
-        Impl_->RemoveActive(request.Id);
+        m_Impl->RemoveActive(request.Id);
         request.SearchState.reset();
         request.PendingPlan = request.Plan;
         request.ProjectedStart.reset();
         request.ProjectedGoal.reset();
         request.ReachabilitySource.reset();
         request.ReachabilityGoal.reset();
-        Impl_->QueueProjection(request.Plan.Start, *Impl_->Profile(request.Plan.Profile));
-        Impl_->QueueProjection(request.Plan.Goal, *Impl_->Profile(request.Plan.Profile));
+        m_Impl->QueueProjection(request.Plan.Start, *m_Impl->Profile(request.Plan.Profile));
+        m_Impl->QueueProjection(request.Plan.Goal, *m_Impl->Profile(request.Plan.Profile));
+        m_Impl->QueueRouteHint(request.Plan.Start, request.Plan.Goal, *m_Impl->Profile(request.Plan.Profile));
     }
 }
 
 void Planner::Prepare(const std::span<const VoxelApi::Region> regions)
 {
-    Impl_->AssertOwnerThread();
-    Impl_->QueueAffectedRegions(regions);
+    UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Prepare navigation topology");
+    m_Impl->AssertOwnerThread();
+    m_Impl->QueueAffectedRegions(regions);
 }
 
 void Planner::UpdateTopology(const Simulation::Api::StepContext context)
 {
+    UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Voxel topology update");
     static_cast<void>(context);
-    Impl_->AssertOwnerThread();
-    Impl_->UpdateTopology();
+    m_Impl->AssertOwnerThread();
+    m_Impl->UpdateTopology();
+    UNREALVOXELSIM_PROFILE_PLOT(m_Impl->Profiling, "Planner urgent navigation tiles",
+                               m_Impl->UrgentTileBuilds.size());
 }
 
 } // namespace UnrealVoxelSim::Navigation::Voxel

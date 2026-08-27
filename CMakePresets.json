@@ -1,16 +1,118 @@
 {
-  "version":6,"cmakeMinimumRequired":{"major":3,"minor":30,"patch":0},
-  "configurePresets":[
-    {"name":"base","hidden":true,"generator":"Ninja","binaryDir":"${sourceDir}/out/build/${presetName}","installDir":"${sourceDir}/out/install/${presetName}","cacheVariables":{"CMAKE_TOOLCHAIN_FILE":"$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake","BUILD_SHARED_LIBS":"OFF","CMAKE_EXPORT_COMPILE_COMMANDS":"ON","UNREALVOXELSIM_BUILD_CMAKE_SOURCE":"$env{UNREALVOXELSIM_BUILD_CMAKE_SOURCE}","UNREALVOXELSIM_INTERNAL_SOURCE_ROOT":"$env{UNREALVOXELSIM_INTERNAL_SOURCE_ROOT}","UNREALVOXELSIM_BUILD_TESTS":"ON","UNREALVOXELSIM_BUILD_BENCHMARKS":"OFF"}},
-    {"name":"windows-msvc-base","hidden":true,"inherits":"base","architecture":{"value":"x64","strategy":"external"},"cacheVariables":{"CMAKE_CXX_COMPILER":"cl.exe","CMAKE_MSVC_RUNTIME_LIBRARY":"MultiThreaded$<$<CONFIG:Debug>:Debug>","UNREALVOXELSIM_BUILD_MODULE_LENGTH_LIMIT":"16","VCPKG_HOST_TRIPLET":"x64-windows-static","VCPKG_TARGET_TRIPLET":"x64-windows-static"},"condition":{"type":"equals","lhs":"${hostSystemName}","rhs":"Windows"}},
-    {"name":"windows-msvc-debug","inherits":"windows-msvc-base","cacheVariables":{"CMAKE_BUILD_TYPE":"Debug"}},
-    {"name":"windows-msvc-release","inherits":"windows-msvc-base","cacheVariables":{"CMAKE_BUILD_TYPE":"Release"}},
-    {"name":"windows-msvc-release-benchmark","inherits":"windows-msvc-release","cacheVariables":{"UNREALVOXELSIM_BUILD_BENCHMARKS":"ON","VCPKG_MANIFEST_FEATURES":"benchmarks"}},
-    {"name":"linux-clang-base","hidden":true,"inherits":"base","cacheVariables":{"CMAKE_CXX_COMPILER":"clang++","VCPKG_HOST_TRIPLET":"x64-linux","VCPKG_TARGET_TRIPLET":"x64-linux"},"condition":{"type":"equals","lhs":"${hostSystemName}","rhs":"Linux"}},
-    {"name":"linux-clang-debug","inherits":"linux-clang-base","cacheVariables":{"CMAKE_BUILD_TYPE":"Debug"}},
-    {"name":"linux-clang-release","inherits":"linux-clang-base","cacheVariables":{"CMAKE_BUILD_TYPE":"Release"}},
-    {"name":"linux-clang-release-benchmark","inherits":"linux-clang-release","cacheVariables":{"UNREALVOXELSIM_BUILD_BENCHMARKS":"ON","VCPKG_MANIFEST_FEATURES":"benchmarks"}}
-  ],
-  "buildPresets":[{"name":"windows-msvc-debug","configurePreset":"windows-msvc-debug"},{"name":"windows-msvc-release","configurePreset":"windows-msvc-release"},{"name":"windows-msvc-release-benchmark","configurePreset":"windows-msvc-release-benchmark"},{"name":"linux-clang-debug","configurePreset":"linux-clang-debug"},{"name":"linux-clang-release","configurePreset":"linux-clang-release"},{"name":"linux-clang-release-benchmark","configurePreset":"linux-clang-release-benchmark"}],
-  "testPresets":[{"name":"windows-msvc-debug","configurePreset":"windows-msvc-debug","output":{"outputOnFailure":true}},{"name":"windows-msvc-release","configurePreset":"windows-msvc-release","output":{"outputOnFailure":true}},{"name":"linux-clang-debug","configurePreset":"linux-clang-debug","output":{"outputOnFailure":true}},{"name":"linux-clang-release","configurePreset":"linux-clang-release","output":{"outputOnFailure":true}}]
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 30,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/o/${presetName}",
+      "installDir": "${sourceDir}/o/install/${presetName}",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "BUILD_SHARED_LIBS": "OFF",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "UNREALVOXELSIM_BUILD_CMAKE_SOURCE": "$env{UNREALVOXELSIM_BUILD_CMAKE_SOURCE}",
+        "UNREALVOXELSIM_INTERNAL_SOURCE_ROOT": "$env{UNREALVOXELSIM_INTERNAL_SOURCE_ROOT}",
+        "UNREALVOXELSIM_BUILD_APP": "ON",
+        "UNREALVOXELSIM_BUILD_MOCKS": "ON",
+        "UNREALVOXELSIM_BUILD_TESTS": "ON",
+        "UNREALVOXELSIM_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "windows-msvc-base",
+      "hidden": true,
+      "inherits": "base",
+      "architecture": {
+        "value": "x64",
+        "strategy": "external"
+      },
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "cl.exe",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+        "VCPKG_HOST_TRIPLET": "x64-windows-static",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "vendor": {
+        "jetbrains.com/clion": {
+          "toolchain": "Visual Studio"
+        }
+      }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "displayName": "Windows MSVC Debug",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "windows-msvc-release",
+      "displayName": "Windows MSVC Release",
+      "inherits": "windows-msvc-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-msvc-benchmark",
+      "displayName": "Windows MSVC Benchmark",
+      "inherits": "windows-msvc-release",
+      "cacheVariables": {
+        "UNREALVOXELSIM_BUILD_BENCHMARKS": "ON",
+        "VCPKG_MANIFEST_FEATURES": "benchmarks"
+      }
+    },
+    {
+      "name": "linux-clang-base",
+      "hidden": true,
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "VCPKG_HOST_TRIPLET": "x64-linux",
+        "VCPKG_TARGET_TRIPLET": "x64-linux"
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-clang-debug",
+      "displayName": "Linux Clang Debug",
+      "inherits": "linux-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "linux-clang-release",
+      "displayName": "Linux Clang Release",
+      "inherits": "linux-clang-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "linux-clang-benchmark",
+      "displayName": "Linux Clang Benchmark",
+      "inherits": "linux-clang-release",
+      "cacheVariables": {
+        "UNREALVOXELSIM_BUILD_BENCHMARKS": "ON",
+        "VCPKG_MANIFEST_FEATURES": "benchmarks"
+      }
+    }
+  ]
 }

@@ -6,6 +6,7 @@
 #include "UnrealVoxelSim/Navigation/Voxel/Api/IInvalidationSink.h"
 #include "UnrealVoxelSim/Navigation/Voxel/Api/IPreparationSink.h"
 #include "UnrealVoxelSim/Navigation/Voxel/Api/ITopologyUpdater.h"
+#include "UnrealVoxelSim/Profiling/Api/IRecorder.h"
 #include <cstddef>
 #include <memory>
 #include <span>
@@ -21,11 +22,19 @@ class Planner final : public UnrealVoxelSim::Navigation::Api::IPlanner,
     static constexpr std::size_t DefaultExpansionsPerTick = 768;
     static constexpr std::size_t DefaultMaximumExpansionsPerRequest = 65'536;
     static constexpr std::size_t DefaultReachabilityComponentExpansionsPerTick = 32;
-    static constexpr std::size_t DefaultTileBuildsPerTopologyUpdate = 1;
+    static constexpr std::size_t DefaultTileBuildsPerTopologyUpdate = 16;
     static constexpr std::size_t DefaultComponentCellsPerTick = 256;
 
     Planner(const UnrealVoxelSim::Navigation::Voxel::Api::IEnvironment &environment,
             std::span<const Movement::Api::GroundedProfile> profiles,
+            std::size_t expansionsPerTick = DefaultExpansionsPerTick,
+            std::size_t maximumExpansionsPerRequest = DefaultMaximumExpansionsPerRequest,
+            std::size_t reachabilityComponentExpansionsPerTick = DefaultReachabilityComponentExpansionsPerTick,
+            std::size_t tileBuildsPerTopologyUpdate = DefaultTileBuildsPerTopologyUpdate,
+            std::size_t componentCellsPerTick = DefaultComponentCellsPerTick);
+    Planner(const UnrealVoxelSim::Navigation::Voxel::Api::IEnvironment &environment,
+            std::span<const Movement::Api::GroundedProfile> profiles,
+            UnrealVoxelSim::Profiling::Api::IRecorder &profiling,
             std::size_t expansionsPerTick = DefaultExpansionsPerTick,
             std::size_t maximumExpansionsPerRequest = DefaultMaximumExpansionsPerRequest,
             std::size_t reachabilityComponentExpansionsPerTick = DefaultReachabilityComponentExpansionsPerTick,
@@ -57,6 +66,6 @@ class Planner final : public UnrealVoxelSim::Navigation::Api::IPlanner,
 
   private:
     class Impl;
-    std::unique_ptr<Impl> Impl_;
+    std::unique_ptr<Impl> m_Impl;
 };
 } // namespace UnrealVoxelSim::Navigation::Voxel

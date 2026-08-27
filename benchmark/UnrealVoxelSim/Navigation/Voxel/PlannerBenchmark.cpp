@@ -20,7 +20,7 @@ class Terrain final : public Api::IEnvironment
 {
   public:
     explicit Terrain(const bool complex = false, const bool sealed = false, const bool pillar = false) noexcept
-        : Complex_(complex), Sealed_(sealed), Pillar_(pillar) {}
+        : m_Complex(complex), m_Sealed(sealed), m_Pillar(pillar) {}
 
     [[nodiscard]] UnrealVoxelSim::Voxel::Api::Region Bounds() const noexcept override
     {
@@ -43,9 +43,9 @@ class Terrain final : public Api::IEnvironment
                     const bool wallLine = x >= -160 && x <= 160 && (x + 160) % 64 == 0;
                     const auto wallIndex = (x + 160) / 64;
                     const auto gapCenter = (wallIndex % 3 - 1) * 64;
-                    const bool wall = (Complex_ || Sealed_) && wallLine &&
-                                      (Sealed_ || std::abs(y - gapCenter) > 4) && z <= 3;
-                    const bool pillar = Pillar_ && x == 200 && y == 0 && z <= 16;
+                    const bool wall = (m_Complex || m_Sealed) && wallLine &&
+                                      (m_Sealed || std::abs(y - gapCenter) > 4) && z <= 3;
+                    const bool pillar = m_Pillar && x == 200 && y == 0 && z <= 16;
                     const bool occupied = z <= 0 || wall || pillar;
                     output[index++] = {occupied, occupied, 1000};
                 }
@@ -53,9 +53,9 @@ class Terrain final : public Api::IEnvironment
     }
 
   private:
-    bool Complex_{};
-    bool Sealed_{};
-    bool Pillar_{};
+    bool m_Complex{};
+    bool m_Sealed{};
+    bool m_Pillar{};
 };
 
 [[nodiscard]] constexpr Movement::Api::Position Location(const std::int32_t x, const std::int32_t y,
