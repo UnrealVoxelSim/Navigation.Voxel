@@ -242,5 +242,5 @@ BENCHMARK(ImpossibleLongRoute)->Iterations(3);
 BENCHMARK(BatchedReachabilityFiveHundredDestinations)->Iterations(3);
 BENCHMARK(ColdIsolatedPillar)->Iterations(3);
 
-} // namespace
-} // namespace UnrealVoxelSim::Navigation::Voxel
+}
+}

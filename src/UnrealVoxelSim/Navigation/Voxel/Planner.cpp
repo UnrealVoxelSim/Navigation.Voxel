@@ -304,7 +304,7 @@ enum class DirectPathState
     Complete,
 };
 
-} // namespace
+}
 
 class Planner::Impl final
 {
@@ -1930,4 +1930,4 @@ void Planner::UpdateTopology(const Simulation::Api::StepContext context)
                                m_Impl->UrgentTileBuilds.size());
 }
 
-} // namespace UnrealVoxelSim::Navigation::Voxel
+}

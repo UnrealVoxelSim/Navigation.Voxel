@@ -439,5 +439,5 @@ TEST(TopologyTest, VoxelInvalidationProactivelyQueuesRebuild)
 
     EXPECT_GT(terrain.RegionReads, readsBeforeInvalidation);
 }
-} // namespace
-} // namespace UnrealVoxelSim::Navigation::Voxel
+}
+}

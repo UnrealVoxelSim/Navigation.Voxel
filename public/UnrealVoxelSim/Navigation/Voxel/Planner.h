@@ -69,4 +69,4 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		class Impl;
 		std::unique_ptr<Impl> m_Impl;
 	};
-} // namespace UnrealVoxelSim::Navigation::Voxel
+}
