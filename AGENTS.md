@@ -98,6 +98,13 @@ under `o` or `_deps`; modify the authoritative repository instead.
 Repositories are private unless explicitly changed. Never place access tokens, credentials, or authenticated URLs in
 CMake files, presets, manifests, or documentation.
 
+## C++ formatting
+
+The canonical C++ formatter is the CLion `PiSubmarine` code-style scheme. Its exact project-level export is tracked in
+`ModuleTemplate/.idea/codeStyles/Project.xml`; new modules copy the tracked `.idea/codeStyles` directory from the
+template. Reformat changed C++ with CLion or its command-line formatter using that XML. `.clang-format` is a fallback
+for tools that cannot run CLion and is not authoritative where its output differs from the project scheme.
+
 ## Naming conventions
 
 - Repository names describe the primary responsibility, for example `Ecs.Api` or `Ecs.EnTT`.
@@ -113,6 +120,8 @@ CMake files, presets, manifests, or documentation.
   ambiguous, for example `Ecs::Api::EntityOperationError` and `Ecs::Api::ComponentOperationError`.
 - Dynamically polymorphic interfaces are prefixed with `I`.
 - Concept names describe requirements and are not prefixed with `I`.
+- Types stored directly as entity components use the `Component` suffix. Reserve that suffix for component types;
+  value types merely contained by a component do not acquire it.
 - Private data members use `m_CamelCase`; public data members use unprefixed `CamelCase`.
 - Use explicit domain types instead of primitive parameters when values have different meanings or invariants.
 
@@ -149,16 +158,18 @@ An integration adapter may follow host requirements within its own boundary.
 
 ### Entity-component storage
 
-Entity-component storage is shared infrastructure owned by a composition root. Domain module APIs do not exchange an
-ECS registry, queries, storage references, or backend-specific handles. Opaque entity identifiers may cross module
-boundaries when identity is part of the contract. Compile-time ECS binding belongs in dedicated adapter or composition
-code, not in dynamically abstracted domain interfaces.
+Entity-component storage is shared infrastructure owned by a composition root. Dynamically abstracted domain APIs do not
+exchange an unrestricted ECS registry, queries, storage references, or backend-specific handles. Opaque entity
+identifiers may cross module boundaries when identity is part of the contract. Compile-time ECS binding and capability
+declarations belong in ECS-aware implementation or composition code, not in dynamically abstracted interfaces.
 
-Domain components are private storage and processing details by default. Cross-domain consumers, including persistence
-adapters, communicate through dynamically abstracted system interfaces from the owning domain API rather than
-inspecting components. A represented value may be public when it independently belongs to the domain contract, but it
-is not made public merely because ECS, persistence, or composition code needs access. Do not design public APIs around
-component presence, archetypes, or ECS query structure.
+Domain components are private storage and processing details by default. A stable component may be a public inter-system
+data contract when cross-domain composition or querying is intentional; public visibility does not grant mutation.
+Every ECS-aware system declares its read, existing-value write, structural, and entity-lifecycle authority, and the
+composition root grants a narrow, non-escalating access object. Public state normally has one authoritative writer or
+structural owner. External mutation is limited to explicit input or coordination components with documented lifetime
+and arbitration. Invariant-rich changes still use domain commands. Persistence needs alone do not make a component
+public.
 
 Large homogeneous data sets are not automatically modeled as ECS entities. Choose storage according to access patterns,
 locality, mutation behavior, and measured performance.

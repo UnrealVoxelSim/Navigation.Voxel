@@ -120,8 +120,8 @@ add zones per voxel, pawn, request, or expanded node.
 
 ## API usage
 
-- Task executors and input adapters should use `Navigation.Api::ICommandSink` and `IExecutionReader`, normally provided
-  by `Navigation.Following`.
+- Task executors and input adapters should use `Navigation.Api::ICommandSink` and read-only
+  `NavigationExecutionComponent` access, normally provided by `Navigation.Following` and the composition root.
 - AI systems needing feasibility should use `Navigation.Api::IReachability` and tolerate pending results.
 - Following implementations use `Navigation.Api::IPlanner` and immutable `Path` values.
 - World adapters call `Prepare` after loading relevant regions and send committed changes through `Invalidate`.
