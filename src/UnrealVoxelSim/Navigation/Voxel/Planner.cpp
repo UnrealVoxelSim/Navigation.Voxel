@@ -105,7 +105,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		[[nodiscard]] constexpr std::int32_t Local(const std::int32_t value, const std::int32_t tile) noexcept
 		{
 			return static_cast<std::int32_t>(static_cast<std::int64_t>(value) -
-											 static_cast<std::int64_t>(tile) * TileEdge);
+				static_cast<std::int64_t>(tile) * TileEdge);
 		}
 
 		[[nodiscard]] constexpr std::size_t LocalIndex(const VoxelApi::Position position, const TileKey tile) noexcept
@@ -147,12 +147,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		[[nodiscard]] constexpr Spatial::Api::Position ToContinuous(const VoxelApi::Position position) noexcept
 		{
 			constexpr auto Half = Math::Api::FixedPointScalar::OneRaw / 2;
-			return {Math::Api::FixedPointScalar::FromRaw(
-						static_cast<std::int64_t>(position.X) * Math::Api::FixedPointScalar::OneRaw + Half),
-					Math::Api::FixedPointScalar::FromRaw(
-						static_cast<std::int64_t>(position.Y) * Math::Api::FixedPointScalar::OneRaw + Half),
-					Math::Api::FixedPointScalar::FromRaw(static_cast<std::int64_t>(position.Z) *
-														 Math::Api::FixedPointScalar::OneRaw)};
+			return {
+				Math::Api::FixedPointScalar::FromRaw(
+					static_cast<std::int64_t>(position.X) * Math::Api::FixedPointScalar::OneRaw + Half),
+				Math::Api::FixedPointScalar::FromRaw(
+					static_cast<std::int64_t>(position.Y) * Math::Api::FixedPointScalar::OneRaw + Half),
+				Math::Api::FixedPointScalar::FromRaw(static_cast<std::int64_t>(position.Z) *
+					Math::Api::FixedPointScalar::OneRaw)
+			};
 		}
 
 		struct PositionHash final
@@ -257,8 +259,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		[[nodiscard]] std::uint32_t CoarseHeuristic(const TileKey from, const TileKey to) noexcept
 		{
 			return static_cast<std::uint32_t>(std::abs(static_cast<std::int64_t>(from.X) - to.X) +
-											  std::abs(static_cast<std::int64_t>(from.Y) - to.Y) +
-											  std::abs(static_cast<std::int64_t>(from.Z) - to.Z));
+				std::abs(static_cast<std::int64_t>(from.Y) - to.Y) +
+				std::abs(static_cast<std::int64_t>(from.Z) - to.Z));
 		}
 
 		struct Request final
@@ -319,18 +321,21 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	{
 	public:
 		Impl(const EnvironmentApi::IEnvironment& environment,
-			 std::span<const Movement::Api::GroundedProfile> profiles,
-			 ProfilingApi::IRecorder* profiling,
-			 const std::size_t expansionsPerTick,
-			 const std::size_t maximumExpansionsPerRequest,
-			 const std::size_t reachabilityComponentExpansionsPerTick,
-			 const std::size_t tileBuildsPerTopologyUpdate,
-			 const std::size_t componentCellsPerTick) :
-			Environment(environment), Profiling(profiling ? *profiling : NullProfiling),
-			Profiles(profiles.begin(), profiles.end()), ExpansionsPerTick(expansionsPerTick),
+		     std::span<const Movement::Api::GroundedProfile> profiles,
+		     ProfilingApi::IRecorder* profiling,
+		     const std::size_t expansionsPerTick,
+		     const std::size_t maximumExpansionsPerRequest,
+		     const std::size_t reachabilityComponentExpansionsPerTick,
+		     const std::size_t tileBuildsPerTopologyUpdate,
+		     const std::size_t componentCellsPerTick) :
+			Environment(environment),
+			Profiling(profiling ? *profiling : NullProfiling),
+			Profiles(profiles.begin(), profiles.end()),
+			ExpansionsPerTick(expansionsPerTick),
 			MaximumExpansionsPerRequest(maximumExpansionsPerRequest),
 			ReachabilityComponentExpansionsPerTick(reachabilityComponentExpansionsPerTick),
-			TileBuildsPerTopologyUpdate(tileBuildsPerTopologyUpdate), ComponentCellsPerTick(componentCellsPerTick)
+			TileBuildsPerTopologyUpdate(tileBuildsPerTopologyUpdate),
+			ComponentCellsPerTick(componentCellsPerTick)
 		{
 			if (Profiles.empty() || ExpansionsPerTick == 0 || MaximumExpansionsPerRequest == 0 ||
 				ReachabilityComponentExpansionsPerTick == 0 || TileBuildsPerTopologyUpdate == 0 ||
@@ -351,8 +356,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] bool GraphTileAffected(const Movement::Api::ProfileId profileId,
-											 const TileKey tile,
-											 const std::set<ProfileTileKey>& affected) const noexcept
+		                                     const TileKey tile,
+		                                     const std::set<ProfileTileKey>& affected) const noexcept
 		{
 			const auto* profile = Profile(profileId);
 			if (!profile)
@@ -360,18 +365,18 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const auto verticalDistance =
 				1 + static_cast<std::int64_t>(std::max(profile->MaximumRise, profile->MaximumDrop)) / TileEdge;
 			return std::ranges::any_of(affected,
-									   [&](const ProfileTileKey candidate)
-									   {
-										   return candidate.Profile == profileId &&
-											   std::abs(static_cast<std::int64_t>(candidate.Tile.X) - tile.X) <= 1 &&
-											   std::abs(static_cast<std::int64_t>(candidate.Tile.Y) - tile.Y) <= 1 &&
-											   std::abs(static_cast<std::int64_t>(candidate.Tile.Z) - tile.Z) <=
-											   verticalDistance;
-									   });
+			                           [&](const ProfileTileKey candidate)
+			                           {
+				                           return candidate.Profile == profileId &&
+					                           std::abs(static_cast<std::int64_t>(candidate.Tile.X) - tile.X) <= 1 &&
+					                           std::abs(static_cast<std::int64_t>(candidate.Tile.Y) - tile.Y) <= 1 &&
+					                           std::abs(static_cast<std::int64_t>(candidate.Tile.Z) - tile.Z) <=
+					                           verticalDistance;
+			                           });
 		}
 
 		[[nodiscard]] bool ComponentAffected(const ComponentKey component,
-											 const std::set<ProfileTileKey>& affected) const noexcept
+		                                     const std::set<ProfileTileKey>& affected) const noexcept
 		{
 			return GraphTileAffected(component.Profile, component.Tile, affected);
 		}
@@ -411,14 +416,19 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const auto leftY = static_cast<std::int32_t>(profile.Length / 2);
 			const auto rightY = static_cast<std::int32_t>((profile.Length - 1) / 2);
 			VoxelApi::Region dependency{
-				{std::max(bounds.Min.X, tileRegion.Min.X - leftX),
-				 std::max(bounds.Min.Y, tileRegion.Min.Y - leftY),
-				 std::max(bounds.Min.Z, tileRegion.Min.Z - 1)},
-				{std::min(bounds.Max.X, tileRegion.Max.X + rightX),
-				 std::min(bounds.Max.Y, tileRegion.Max.Y + rightY),
-				 std::min(bounds.Max.Z,
-						  tileRegion.Max.Z + static_cast<std::int32_t>(profile.Height) +
-							  static_cast<std::int32_t>(std::max(profile.MaximumRise, profile.MaximumDrop)) - 1)}};
+				{
+					std::max(bounds.Min.X, tileRegion.Min.X - leftX),
+					std::max(bounds.Min.Y, tileRegion.Min.Y - leftY),
+					std::max(bounds.Min.Z, tileRegion.Min.Z - 1)
+				},
+				{
+					std::min(bounds.Max.X, tileRegion.Max.X + rightX),
+					std::min(bounds.Max.Y, tileRegion.Max.Y + rightY),
+					std::min(bounds.Max.Z,
+					         tileRegion.Max.Z + static_cast<std::int32_t>(profile.Height) +
+					         static_cast<std::int32_t>(std::max(profile.MaximumRise, profile.MaximumDrop)) - 1)
+				}
+			};
 			Tile tile{dependency};
 			if (!dependency.IsValid())
 				return tile;
@@ -491,9 +501,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				[&](const VoxelApi::Position current, const int dx, const int dy) -> std::optional<VoxelApi::Position>
 			{
 				const auto standable = [&](const VoxelApi::Position position)
-				{ return ToTile(position) == key && tile.Standable[LocalIndex(position, key)] != 0; };
+				{
+					return ToTile(position) == key && tile.Standable[LocalIndex(position, key)] != 0;
+				};
 				const auto test = [&](const std::int32_t z)
-				{ return VoxelApi::Position{current.X + dx, current.Y + dy, z}; };
+				{
+					return VoxelApi::Position{current.X + dx, current.Y + dy, z};
+				};
 				auto candidate = test(current.Z);
 				if (!standable(candidate))
 				{
@@ -522,7 +536,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				}
 				if (dx != 0 && dy != 0 &&
 					(!standable({current.X + dx, current.Y, candidate.Z}) ||
-					 !standable({current.X, current.Y + dy, candidate.Z})))
+						!standable({current.X, current.Y + dy, candidate.Z})))
 					return std::nullopt;
 				const auto elevation = candidate.Z - current.Z;
 				if (elevation > 0 && tile.Clearance[LocalIndex(current, key)] < profile.Height + elevation)
@@ -632,9 +646,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 
 		template <typename Visitor>
 		void VisitRouteHint(const Spatial::Api::Position start,
-							const Spatial::Api::Position goal,
-							const Movement::Api::GroundedProfile& profile,
-							Visitor&& visitor) const
+		                    const Spatial::Api::Position goal,
+		                    const Movement::Api::GroundedProfile& profile,
+		                    Visitor&& visitor) const
 		{
 			const auto startVoxel = ToVoxel(start);
 			const auto goalVoxel = ToVoxel(goal);
@@ -653,8 +667,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					return from;
 				const auto delta = static_cast<std::int64_t>(to) - from;
 				return static_cast<std::int32_t>(static_cast<std::int64_t>(from) +
-												 delta * static_cast<std::int64_t>(index) /
-													 static_cast<std::int64_t>(count));
+					delta * static_cast<std::int64_t>(index) /
+					static_cast<std::int64_t>(count));
 			};
 			for (std::size_t index = 0; index <= steps; ++index)
 			{
@@ -671,14 +685,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		void QueueRouteHint(const Spatial::Api::Position start,
-							const Spatial::Api::Position goal,
-							const Movement::Api::GroundedProfile& profile)
+		                    const Spatial::Api::Position goal,
+		                    const Movement::Api::GroundedProfile& profile)
 		{
 			VisitRouteHint(start, goal, profile, [&](const ProfileTileKey key) { QueueTile(key); });
 		}
 
 		[[nodiscard]] bool ProjectionReady(const Spatial::Api::Position position,
-										   const Movement::Api::GroundedProfile& profile) const
+		                                   const Movement::Api::GroundedProfile& profile) const
 		{
 			const auto origin = ToVoxel(position);
 			if (!IsTileReady({profile.Id, ToTile(origin)}))
@@ -695,7 +709,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		{
 			std::size_t standablePositions{};
 			for (std::size_t built = 0;
-				 built < TileBuildsPerTopologyUpdate && standablePositions < TopologyStandablePositionsPerUpdate;)
+			     built < TileBuildsPerTopologyUpdate && standablePositions < TopologyStandablePositionsPerUpdate;)
 			{
 				std::optional<ProfileTileKey> next;
 				while (!UrgentTileBuildOrder.empty() && !next)
@@ -709,10 +723,12 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				{
 					const auto activeNavigation =
 						std::ranges::any_of(Requests,
-											[](const auto& request)
-											{ return request.State == NavigationApi::PlanState::Pending; }) ||
+						                    [](const auto& request)
+						                    {
+							                    return request.State == NavigationApi::PlanState::Pending;
+						                    }) ||
 						std::ranges::any_of(ReachabilityRequests,
-											[](const auto& request) { return !request.Result->IsComplete(); });
+						                    [](const auto& request) { return !request.Result->IsComplete(); });
 					if (activeNavigation)
 						break;
 					const auto key = BackgroundTileBuildOrder.front();
@@ -750,10 +766,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					const auto verticalClearance = static_cast<std::int32_t>(profile.Height) +
 						static_cast<std::int32_t>(std::max(profile.MaximumRise, profile.MaximumDrop));
 					const VoxelApi::Region affected{
-						{region.Min.X - horizontalBeforeX,
-						 region.Min.Y - horizontalBeforeY,
-						 region.Min.Z - verticalClearance + 1},
-						{region.Max.X + horizontalAfterX, region.Max.Y + horizontalAfterY, region.Max.Z + 1}};
+						{
+							region.Min.X - horizontalBeforeX,
+							region.Min.Y - horizontalBeforeY,
+							region.Min.Z - verticalClearance + 1
+						},
+						{region.Max.X + horizontalAfterX, region.Max.Y + horizontalAfterY, region.Max.Z + 1}
+					};
 					const auto minimum = ToTile(affected.Min);
 					const auto maximum = ToTile({affected.Max.X - 1, affected.Max.Y - 1, affected.Max.Z - 1});
 					for (auto z = minimum.Z; z <= maximum.Z; ++z)
@@ -778,7 +797,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] std::uint16_t Clearance(const VoxelApi::Position position,
-											  const Movement::Api::GroundedProfile& profile)
+		                                      const Movement::Api::GroundedProfile& profile)
 		{
 			if (!Environment.Bounds().Contains(position))
 				return 0;
@@ -793,7 +812,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] std::optional<VoxelApi::Position> Project(const Spatial::Api::Position position,
-																const Movement::Api::GroundedProfile& profile)
+		                                                        const Movement::Api::GroundedProfile& profile)
 		{
 			const auto origin = ToVoxel(position);
 			if (IsStandable(origin, profile))
@@ -812,12 +831,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] std::optional<VoxelApi::Position> Neighbor(const VoxelApi::Position current,
-																 const int dx,
-																 const int dy,
-																 const Movement::Api::GroundedProfile& profile)
+		                                                         const int dx,
+		                                                         const int dy,
+		                                                         const Movement::Api::GroundedProfile& profile)
 		{
 			const auto test = [&](const std::int32_t z)
-			{ return VoxelApi::Position{current.X + dx, current.Y + dy, z}; };
+			{
+				return VoxelApi::Position{current.X + dx, current.Y + dy, z};
+			};
 			auto candidate = test(current.Z);
 			if (!IsStandable(candidate, profile))
 			{
@@ -859,7 +880,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] std::optional<ComponentKey> ComponentAt(const VoxelApi::Position position,
-															  const Movement::Api::GroundedProfile& profile)
+		                                                      const Movement::Api::GroundedProfile& profile)
 		{
 			if (!IsStandable(position, profile))
 				return std::nullopt;
@@ -874,7 +895,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] bool OutgoingCellDependenciesReady(const VoxelApi::Position current,
-														 const Movement::Api::GroundedProfile& profile)
+		                                                 const Movement::Api::GroundedProfile& profile)
 		{
 			auto ready = true;
 			const auto bounds = Environment.Bounds();
@@ -884,8 +905,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					if (dx == 0 && dy == 0)
 						continue;
 					for (auto elevation = -static_cast<std::int32_t>(profile.MaximumDrop);
-						 elevation <= static_cast<std::int32_t>(profile.MaximumRise);
-						 ++elevation)
+					     elevation <= static_cast<std::int32_t>(profile.MaximumRise);
+					     ++elevation)
 					{
 						const VoxelApi::Position candidate{current.X + dx, current.Y + dy, current.Z + elevation};
 						if (!bounds.Contains(candidate))
@@ -899,7 +920,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] static bool IsHorizontalTileBoundary(const VoxelApi::Position position,
-														   const TileKey tile) noexcept
+		                                                   const TileKey tile) noexcept
 		{
 			const auto x = Local(position.X, tile.X);
 			const auto y = Local(position.Y, tile.Y);
@@ -907,8 +928,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] static bool IsOutgoingTileBoundary(const VoxelApi::Position position,
-														 const TileKey tile,
-														 const Movement::Api::GroundedProfile& profile) noexcept
+		                                                 const TileKey tile,
+		                                                 const Movement::Api::GroundedProfile& profile) noexcept
 		{
 			const auto z = Local(position.Z, tile.Z);
 			return IsHorizontalTileBoundary(position, tile) || z < static_cast<std::int32_t>(profile.MaximumDrop) ||
@@ -916,8 +937,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] static bool IsIncomingTileBoundary(const VoxelApi::Position position,
-														 const TileKey tile,
-														 const Movement::Api::GroundedProfile& profile) noexcept
+		                                                 const TileKey tile,
+		                                                 const Movement::Api::GroundedProfile& profile) noexcept
 		{
 			const auto z = Local(position.Z, tile.Z);
 			return IsHorizontalTileBoundary(position, tile) || z < static_cast<std::int32_t>(profile.MaximumRise) ||
@@ -980,7 +1001,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] bool IncomingCellDependenciesReady(const VoxelApi::Position target,
-														 const Movement::Api::GroundedProfile& profile)
+		                                                 const Movement::Api::GroundedProfile& profile)
 		{
 			auto ready = true;
 			const auto bounds = Environment.Bounds();
@@ -990,8 +1011,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					if (dx == 0 && dy == 0)
 						continue;
 					for (auto elevation = -static_cast<std::int32_t>(profile.MaximumRise);
-						 elevation <= static_cast<std::int32_t>(profile.MaximumDrop);
-						 ++elevation)
+					     elevation <= static_cast<std::int32_t>(profile.MaximumDrop);
+					     ++elevation)
 					{
 						const VoxelApi::Position predecessor{target.X - dx, target.Y - dy, target.Z + elevation};
 						if (!bounds.Contains(predecessor))
@@ -1043,8 +1064,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 						if (dx == 0 && dy == 0)
 							continue;
 						for (auto elevation = -static_cast<std::int32_t>(profile->MaximumRise);
-							 elevation <= static_cast<std::int32_t>(profile->MaximumDrop);
-							 ++elevation)
+						     elevation <= static_cast<std::int32_t>(profile->MaximumDrop);
+						     ++elevation)
 						{
 							const VoxelApi::Position predecessor{target.X - dx, target.Y - dy, target.Z + elevation};
 							if (!bounds.Contains(predecessor) || !IsStandable(predecessor, *profile))
@@ -1090,7 +1111,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				ActiveComponentSearches.push_back(source);
 			}
 			else if (!iterator->Complete &&
-					 std::ranges::find(ActiveComponentSearches, source) == ActiveComponentSearches.end())
+				std::ranges::find(ActiveComponentSearches, source) == ActiveComponentSearches.end())
 				ActiveComponentSearches.push_back(source);
 			return *iterator;
 		}
@@ -1129,7 +1150,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					if (search != ComponentSearches.end() && search->Open.empty())
 						search->Complete = true;
 					ActiveComponentSearches.erase(ActiveComponentSearches.begin() +
-												  static_cast<std::ptrdiff_t>(ActiveComponentCursor));
+						static_cast<std::ptrdiff_t>(ActiveComponentCursor));
 					if (ActiveComponentCursor >= ActiveComponentSearches.size())
 						ActiveComponentCursor = 0;
 					continue;
@@ -1148,7 +1169,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				{
 					search->Complete = true;
 					ActiveComponentSearches.erase(ActiveComponentSearches.begin() +
-												  static_cast<std::ptrdiff_t>(ActiveComponentCursor));
+						static_cast<std::ptrdiff_t>(ActiveComponentCursor));
 					if (ActiveComponentCursor >= ActiveComponentSearches.size())
 						ActiveComponentCursor = 0;
 				}
@@ -1158,7 +1179,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] std::optional<std::vector<TileKey>> TileNeighbors(const TileKey key,
-																		const Movement::Api::GroundedProfile& profile)
+		                                                                const Movement::Api::GroundedProfile& profile)
 		{
 			const auto cacheKey = ProfileTileKey{profile.Id, key};
 			if (const auto cached = TileNeighborCache.find(cacheKey); cached != TileNeighborCache.end())
@@ -1200,9 +1221,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] std::optional<VoxelApi::Position> FindPortal(const TileKey from,
-																   const TileKey to,
-																   const VoxelApi::Position goal,
-																   const Movement::Api::GroundedProfile& profile)
+		                                                           const TileKey to,
+		                                                           const VoxelApi::Position goal,
+		                                                           const Movement::Api::GroundedProfile& profile)
 		{
 			const auto dx = to.X < from.X ? -1 : to.X > from.X ? 1 : 0;
 			const auto dy = to.Y < from.Y ? -1 : to.Y > from.Y ? 1 : 0;
@@ -1233,8 +1254,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] std::optional<CoarseCorridor> BuildCorridor(const VoxelApi::Position start,
-																  const VoxelApi::Position goal,
-																  const Movement::Api::GroundedProfile& profile)
+		                                                          const VoxelApi::Position goal,
+		                                                          const Movement::Api::GroundedProfile& profile)
 		{
 			const CorridorKey key{profile.Id, ToTile(start), ToTile(goal)};
 			if (const auto cached = Corridors.find(key); cached != Corridors.end())
@@ -1247,9 +1268,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const auto initialHeuristic = CoarseHeuristic(key.Start, key.Goal);
 			open.push({initialHeuristic, initialHeuristic, key.Start});
 			const auto expansionLimit = std::clamp<std::size_t>((static_cast<std::size_t>(initialHeuristic) + 1) *
-																	CoarseExpansionDistanceFactor,
-																MinimumCoarseExpansions,
-																MaximumCoarseExpansions);
+			                                                    CoarseExpansionDistanceFactor,
+			                                                    MinimumCoarseExpansions,
+			                                                    MaximumCoarseExpansions);
 			std::size_t expansions{};
 			bool reached{};
 			while (!open.empty() && expansions < expansionLimit)
@@ -1308,14 +1329,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					const auto tile = centerLine[index];
 					corridor.Allowed.push_back(tile);
 					const auto target = index + 1 < centerLine.size()
-						? FindPortal(tile, centerLine[index + 1], goal, profile).value_or(goal)
-						: goal;
+						                    ? FindPortal(tile, centerLine[index + 1], goal, profile).value_or(goal)
+						                    : goal;
 					corridor.Guidance.emplace(
 						tile, TileGuidance{target, static_cast<std::uint32_t>(centerLine.size() - index - 1)});
 				}
 				std::ranges::sort(corridor.Allowed);
 				corridor.Allowed.erase(std::unique(corridor.Allowed.begin(), corridor.Allowed.end()),
-									   corridor.Allowed.end());
+				                       corridor.Allowed.end());
 			}
 			if (TopologyDemandGeneration != demandGeneration)
 				return std::nullopt;
@@ -1324,7 +1345,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] static std::uint64_t GuidedHeuristic(const Search& search,
-														   const VoxelApi::Position position) noexcept
+		                                                   const VoxelApi::Position position) noexcept
 		{
 			const auto direct = Heuristic(position, search.Goal);
 			const auto guidance = search.Guidance.find(ToTile(position));
@@ -1336,8 +1357,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		void PublishPath(Request& request,
-						 const std::span<const VoxelApi::Position> positions,
-						 const Movement::Api::ProfileId profile)
+		                 const std::span<const VoxelApi::Position> positions,
+		                 const Movement::Api::ProfileId profile)
 		{
 			auto path = std::make_shared<NavigationApi::Path>();
 			path->EnvironmentRevision = Revision;
@@ -1386,7 +1407,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const auto goal = *request.ProjectedGoal;
 			const auto maximumSteps = static_cast<std::size_t>(
 				std::max(std::abs(static_cast<std::int64_t>(goal.X) - request.ProjectedStart->X),
-						 std::abs(static_cast<std::int64_t>(goal.Y) - request.ProjectedStart->Y)));
+				         std::abs(static_cast<std::int64_t>(goal.Y) - request.ProjectedStart->Y)));
 			auto current = *request.ProjectedStart;
 			std::set<TileKey> dependencies{ToTile(current)};
 			std::array<std::optional<std::pair<ProfileTileKey, const Tile*>>, 8> tileCache;
@@ -1453,7 +1474,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 
 		[[nodiscard]] bool PositionDependenciesReady(const VoxelApi::Position current,
-													 const Movement::Api::GroundedProfile& profile)
+		                                             const Movement::Api::GroundedProfile& profile)
 		{
 			auto ready = true;
 			const auto bounds = Environment.Bounds();
@@ -1463,8 +1484,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					if (dx == 0 && dy == 0)
 						continue;
 					for (auto elevation = -static_cast<std::int32_t>(profile.MaximumDrop);
-						 elevation <= static_cast<std::int32_t>(profile.MaximumRise);
-						 ++elevation)
+					     elevation <= static_cast<std::int32_t>(profile.MaximumRise);
+					     ++elevation)
 					{
 						const VoxelApi::Position candidate{current.X + dx, current.Y + dy, current.Z + elevation};
 						if (!bounds.Contains(candidate))
@@ -1724,7 +1745,10 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					continue;
 				}
 				const CorridorKey corridorKey{
-					profile->Id, ToTile(*request.ProjectedStart), ToTile(*request.ProjectedGoal)};
+					profile->Id,
+					ToTile(*request.ProjectedStart),
+					ToTile(*request.ProjectedGoal)
+				};
 				const auto corridorCached = Corridors.contains(corridorKey);
 				if (!corridorCached && coldCorridorBudget == 0)
 					continue;
@@ -1788,39 +1812,39 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	};
 
 	Planner::Planner(const EnvironmentApi::IEnvironment& environment,
-					 const std::span<const Movement::Api::GroundedProfile> profiles,
-					 const std::size_t expansionsPerTick,
-					 const std::size_t maximumExpansionsPerRequest,
-					 const std::size_t reachabilityComponentExpansionsPerTick,
-					 const std::size_t tileBuildsPerTopologyUpdate,
-					 const std::size_t componentCellsPerTick) :
+	                 const std::span<const Movement::Api::GroundedProfile> profiles,
+	                 const std::size_t expansionsPerTick,
+	                 const std::size_t maximumExpansionsPerRequest,
+	                 const std::size_t reachabilityComponentExpansionsPerTick,
+	                 const std::size_t tileBuildsPerTopologyUpdate,
+	                 const std::size_t componentCellsPerTick) :
 		m_Impl(std::make_unique<Impl>(environment,
-									  profiles,
-									  nullptr,
-									  expansionsPerTick,
-									  maximumExpansionsPerRequest,
-									  reachabilityComponentExpansionsPerTick,
-									  tileBuildsPerTopologyUpdate,
-									  componentCellsPerTick))
+		                              profiles,
+		                              nullptr,
+		                              expansionsPerTick,
+		                              maximumExpansionsPerRequest,
+		                              reachabilityComponentExpansionsPerTick,
+		                              tileBuildsPerTopologyUpdate,
+		                              componentCellsPerTick))
 	{
 	}
 
 	Planner::Planner(const EnvironmentApi::IEnvironment& environment,
-					 const std::span<const Movement::Api::GroundedProfile> profiles,
-					 ProfilingApi::IRecorder& profiling,
-					 const std::size_t expansionsPerTick,
-					 const std::size_t maximumExpansionsPerRequest,
-					 const std::size_t reachabilityComponentExpansionsPerTick,
-					 const std::size_t tileBuildsPerTopologyUpdate,
-					 const std::size_t componentCellsPerTick) :
+	                 const std::span<const Movement::Api::GroundedProfile> profiles,
+	                 ProfilingApi::IRecorder& profiling,
+	                 const std::size_t expansionsPerTick,
+	                 const std::size_t maximumExpansionsPerRequest,
+	                 const std::size_t reachabilityComponentExpansionsPerTick,
+	                 const std::size_t tileBuildsPerTopologyUpdate,
+	                 const std::size_t componentCellsPerTick) :
 		m_Impl(std::make_unique<Impl>(environment,
-									  profiles,
-									  &profiling,
-									  expansionsPerTick,
-									  maximumExpansionsPerRequest,
-									  reachabilityComponentExpansionsPerTick,
-									  tileBuildsPerTopologyUpdate,
-									  componentCellsPerTick))
+		                              profiles,
+		                              &profiling,
+		                              expansionsPerTick,
+		                              maximumExpansionsPerRequest,
+		                              reachabilityComponentExpansionsPerTick,
+		                              tileBuildsPerTopologyUpdate,
+		                              componentCellsPerTick))
 	{
 	}
 
@@ -1890,8 +1914,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			builtColdCorridor = m_Impl->ResolveReachability(!topologyBuilt);
 		}
 		std::size_t remaining = builtColdCorridor || topologyBuilt
-			? std::min(m_Impl->ExpansionsPerTick, FineExpansionsAfterColdCorridor)
-			: m_Impl->ExpansionsPerTick;
+			                        ? std::min(m_Impl->ExpansionsPerTick, FineExpansionsAfterColdCorridor)
+			                        : m_Impl->ExpansionsPerTick;
 		{
 			UNREALVOXELSIM_PROFILE_ZONE(m_Impl->Profiling, "Expand fine paths");
 			while (remaining != 0 && !m_Impl->ActiveRequests.empty())
@@ -1943,8 +1967,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	{
 		m_Impl->AssertOwnerThread();
 		const auto iterator = m_Impl->FindRequest(request);
-		return iterator != m_Impl->Requests.end() && iterator->Id == request ? iterator->State
-																			 : NavigationApi::PlanState::Cancelled;
+		return iterator != m_Impl->Requests.end() && iterator->Id == request
+			       ? iterator->State
+			       : NavigationApi::PlanState::Cancelled;
 	}
 
 	std::shared_ptr<const NavigationApi::Path> Planner::ReadPath(const NavigationApi::RequestId request) const noexcept
@@ -1996,8 +2021,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	{
 		m_Impl->AssertOwnerThread();
 		const auto iterator = m_Impl->FindReachabilityRequest(request);
-		return iterator != m_Impl->ReachabilityRequests.end() && iterator->Query.Request == request ? iterator->Result
-																									: nullptr;
+		return iterator != m_Impl->ReachabilityRequests.end() && iterator->Query.Request == request
+			       ? iterator->Result
+			       : nullptr;
 	}
 
 	void Planner::Invalidate(const std::span<const VoxelApi::Region> regions)
@@ -2011,7 +2037,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		for (auto tile = m_Impl->Tiles.begin(); tile != m_Impl->Tiles.end();)
 		{
 			if (!std::ranges::any_of(regions,
-									 [&](const auto region) { return Intersects(tile->second.Dependency, region); }))
+			                         [&](const auto region) { return Intersects(tile->second.Dependency, region); }))
 			{
 				++tile;
 				continue;
@@ -2022,18 +2048,24 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		m_Impl->QueueAffectedRegions(regions);
 
 		std::erase_if(m_Impl->TileNeighborCache,
-					  [&](const auto& entry)
-					  { return m_Impl->GraphTileAffected(entry.first.Profile, entry.first.Tile, affectedTiles); });
+		              [&](const auto& entry)
+		              {
+			              return m_Impl->GraphTileAffected(entry.first.Profile, entry.first.Tile, affectedTiles);
+		              });
 		std::erase_if(m_Impl->Corridors,
-					  [&](const auto& entry)
-					  {
-						  return std::ranges::any_of(
-							  entry.second.Dependencies,
-							  [&](const auto tile)
-							  { return m_Impl->GraphTileAffected(entry.first.Profile, tile, affectedTiles); });
-					  });
+		              [&](const auto& entry)
+		              {
+			              return std::ranges::any_of(
+				              entry.second.Dependencies,
+				              [&](const auto tile)
+				              {
+					              return m_Impl->GraphTileAffected(entry.first.Profile, tile, affectedTiles);
+				              });
+		              });
 		const auto componentAffected = [&](const auto& entry)
-		{ return m_Impl->ComponentAffected(entry.first, affectedTiles); };
+		{
+			return m_Impl->ComponentAffected(entry.first, affectedTiles);
+		};
 		std::erase_if(m_Impl->ComponentEdgeCache, componentAffected);
 		std::erase_if(m_Impl->ComponentIncomingCache, componentAffected);
 		std::erase_if(m_Impl->PendingComponentEdgeBuilds, componentAffected);
@@ -2041,18 +2073,20 @@ namespace UnrealVoxelSim::Navigation::Voxel
 
 		std::set<ComponentKey> invalidatedSearches;
 		std::erase_if(m_Impl->ComponentSearches,
-					  [&](const ComponentSearch& search)
-					  {
-						  const auto affected =
-							  std::ranges::any_of(search.Visited,
-												  [&](const auto component)
-												  { return m_Impl->ComponentAffected(component, affectedTiles); });
-						  if (affected)
-							  invalidatedSearches.insert(search.Source);
-						  return affected;
-					  });
+		              [&](const ComponentSearch& search)
+		              {
+			              const auto affected =
+				              std::ranges::any_of(search.Visited,
+				                                  [&](const auto component)
+				                                  {
+					                                  return m_Impl->ComponentAffected(component, affectedTiles);
+				                                  });
+			              if (affected)
+				              invalidatedSearches.insert(search.Source);
+			              return affected;
+		              });
 		std::erase_if(m_Impl->ActiveComponentSearches,
-					  [&](const auto source) { return invalidatedSearches.contains(source); });
+		              [&](const auto source) { return invalidatedSearches.contains(source); });
 		if (m_Impl->ActiveComponentCursor >= m_Impl->ActiveComponentSearches.size())
 			m_Impl->ActiveComponentCursor = 0;
 
@@ -2061,8 +2095,10 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			auto& validation = entry.second;
 			if (validation.Current &&
 				std::ranges::any_of(validation.Dependencies,
-									[&](const auto tile)
-									{ return m_Impl->GraphTileAffected(validation.Profile, tile, affectedTiles); }))
+				                    [&](const auto tile)
+				                    {
+					                    return m_Impl->GraphTileAffected(validation.Profile, tile, affectedTiles);
+				                    }))
 				validation.Current = false;
 		}
 
@@ -2077,17 +2113,19 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const auto endpointAffected =
 				m_Impl->GraphTileAffected(request.Query.Profile, ToTile(ToVoxel(request.Query.Start)), affectedTiles) ||
 				std::ranges::any_of(request.Query.Destinations,
-									[&](const auto destination)
-									{
-										return m_Impl->GraphTileAffected(
-											request.Query.Profile, ToTile(ToVoxel(destination)), affectedTiles);
-									});
+				                    [&](const auto destination)
+				                    {
+					                    return m_Impl->GraphTileAffected(
+						                    request.Query.Profile, ToTile(ToVoxel(destination)), affectedTiles);
+				                    });
 			const auto topologyAffected = (request.Source &&
-										   (m_Impl->ComponentAffected(*request.Source, affectedTiles) ||
-											invalidatedSearches.contains(*request.Source))) ||
+					(m_Impl->ComponentAffected(*request.Source, affectedTiles) ||
+						invalidatedSearches.contains(*request.Source))) ||
 				std::ranges::any_of(request.Goals,
-									[&](const auto& goal)
-									{ return goal && m_Impl->ComponentAffected(*goal, affectedTiles); });
+				                    [&](const auto& goal)
+				                    {
+					                    return goal && m_Impl->ComponentAffected(*goal, affectedTiles);
+				                    });
 			if (!endpointAffected && !topologyAffected)
 				continue;
 			std::ranges::fill(request.Result->Destinations, NavigationApi::ReachabilityState::Pending);
@@ -2110,16 +2148,16 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				m_Impl->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Start)), affectedTiles) ||
 				m_Impl->GraphTileAffected(request.Plan.Profile, ToTile(ToVoxel(request.Plan.Goal)), affectedTiles);
 			const auto topologyAffected = (request.ReachabilitySource &&
-										   (m_Impl->ComponentAffected(*request.ReachabilitySource, affectedTiles) ||
-											invalidatedSearches.contains(*request.ReachabilitySource))) ||
+					(m_Impl->ComponentAffected(*request.ReachabilitySource, affectedTiles) ||
+						invalidatedSearches.contains(*request.ReachabilitySource))) ||
 				(request.ReachabilityGoal && m_Impl->ComponentAffected(*request.ReachabilityGoal, affectedTiles)) ||
 				(request.SearchState &&
-				 std::ranges::any_of(request.SearchState->Records,
-									 [&](const auto& record)
-									 {
-										 return m_Impl->GraphTileAffected(
-											 request.SearchState->Profile, ToTile(record.first), affectedTiles);
-									 }));
+					std::ranges::any_of(request.SearchState->Records,
+					                    [&](const auto& record)
+					                    {
+						                    return m_Impl->GraphTileAffected(
+							                    request.SearchState->Profile, ToTile(record.first), affectedTiles);
+					                    }));
 			if (!endpointAffected && !topologyAffected)
 				continue;
 			m_Impl->RemoveActive(request.Id);

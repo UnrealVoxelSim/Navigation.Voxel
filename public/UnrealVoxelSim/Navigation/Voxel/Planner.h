@@ -66,6 +66,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		void UpdateTopology(Simulation::Api::StepContext context) override;
 
 	private:
+
+		// TODO Please do not use this pattern. Do not wrap a class inside another class, unless the internal
+		// class has a meaningful utility outside the wrapper.
 		class Impl;
 		std::unique_ptr<Impl> m_Impl;
 	};
