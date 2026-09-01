@@ -64,4 +64,4 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		std::vector<Movement::Api::GroundedProfile> m_Profiles;
 		std::thread::id m_OwnerThread{std::this_thread::get_id()};
 	};
-} // namespace UnrealVoxelSim::Navigation::Following
+} // namespace UnrealVoxelSim::Navigation::Voxel

@@ -1,4 +1,4 @@
-#include "../../../../../Navigation.Voxel/public/UnrealVoxelSim/Navigation/Voxel/Follower.h"
+#include "UnrealVoxelSim/Navigation/Voxel/Follower.h"
 
 #include <algorithm>
 #include <cassert>
@@ -242,4 +242,4 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				}
 			});
 	}
-} // namespace UnrealVoxelSim::Navigation::Following
+} // namespace UnrealVoxelSim::Navigation::Voxel

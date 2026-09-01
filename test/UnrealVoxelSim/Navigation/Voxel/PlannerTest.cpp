@@ -80,7 +80,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 1};
 			for (std::uint64_t index = 1; index <= 10'000; ++index)
-				ASSERT_TRUE(planner.Begin(
+				ASSERT_TRUE(planner.BeginPathPlanning(
 					{profiles[0].Id, Location(0, 0, 1), Location(48, 48, 1)}));
 
 			terrain.BoundsReads = 0;
@@ -96,7 +96,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(12, 12, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(12, 12, 1)}));
 
 			for (std::uint64_t tick = 0;
 				 tick < 20 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
@@ -124,7 +124,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultMaximumExpansionsPerRequest,
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
-			ASSERT_TRUE(planner.Begin(
+			ASSERT_TRUE(planner.BeginPathPlanning(
 				{profiles[0].Id, Location(-48, 0, 1), Location(48, 0, 1)}));
 
 			for (std::uint64_t tick = 0;
@@ -147,9 +147,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 32, 1), Location(8, 32, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 32, 1), Location(8, 32, 1)}));
 			for (std::uint64_t tick = 0; tick < 200; ++tick)
 			{
 				Advance(planner, tick);
@@ -178,7 +178,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(4, 0, 2)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(4, 0, 2)}));
 
 			for (std::uint64_t tick = 0;
 				 tick < 20 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
@@ -199,7 +199,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(3, 0, 2)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(3, 0, 2)}));
 
 			for (std::uint64_t tick = 0;
 				 tick < 200 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
@@ -216,7 +216,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 1};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(20, 0, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(20, 0, 1)}));
 
 			Advance(planner, 0);
 			EXPECT_EQ(planner.GetPlanState(Navigation::Api::PlanRequestId{1}), Navigation::Api::PlanState::Pending);
@@ -234,7 +234,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
 
 			for (std::uint64_t tick = 0;
 				 tick < 200 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
@@ -254,7 +254,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 128, 1, Planner::DefaultReachabilityComponentExpansionsPerTick, 64};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
 
 			std::uint64_t tick{};
 			while (tick < 200 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending)
@@ -278,7 +278,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultMaximumExpansionsPerRequest,
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
-			ASSERT_TRUE(planner.BeginReachability({Navigation::Api::ReachabilityRequestId{1},
+			ASSERT_TRUE(planner.BeginReachabilityQuery({Navigation::Api::ReachabilityRequestId{1},
 												   profiles[0].Id,
 												   Location(0, 0, 1),
 												   {Location(8, 0, 1), Location(32, 0, 1)}}));
@@ -287,7 +287,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			for (std::uint64_t tick = 0; tick < 200; ++tick)
 			{
 				Advance(planner, tick);
-				result = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
+				result = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{1});
 				if (result && result->IsComplete())
 					break;
 			}
@@ -309,16 +309,16 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultMaximumExpansionsPerRequest,
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
-			ASSERT_TRUE(planner.BeginReachability(
+			ASSERT_TRUE(planner.BeginReachabilityQuery(
 				{Navigation::Api::ReachabilityRequestId{1}, profiles[0].Id, Location(-2, 0, 4), {Location(2, 0, 1)}}));
-			ASSERT_TRUE(planner.BeginReachability(
+			ASSERT_TRUE(planner.BeginReachabilityQuery(
 				{Navigation::Api::ReachabilityRequestId{2}, profiles[0].Id, Location(2, 0, 1), {Location(-2, 0, 4)}}));
 
 			for (std::uint64_t tick = 0; tick < 200; ++tick)
 				Advance(planner, tick);
 
-			const auto downward = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
-			const auto upward = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{2});
+			const auto downward = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{1});
+			const auto upward = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{2});
 			ASSERT_NE(downward, nullptr);
 			ASSERT_NE(upward, nullptr);
 			EXPECT_EQ(downward->Destinations[0], Navigation::Api::ReachabilityState::Reachable);
@@ -336,16 +336,16 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultMaximumExpansionsPerRequest,
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
-			ASSERT_TRUE(planner.BeginReachability(
+			ASSERT_TRUE(planner.BeginReachabilityQuery(
 				{Navigation::Api::ReachabilityRequestId{1}, profiles[0].Id, Location(2, 8, 16), {Location(6, 8, 12)}}));
-			ASSERT_TRUE(planner.BeginReachability(
+			ASSERT_TRUE(planner.BeginReachabilityQuery(
 				{Navigation::Api::ReachabilityRequestId{2}, profiles[0].Id, Location(6, 8, 12), {Location(2, 8, 16)}}));
 
 			for (std::uint64_t tick = 0; tick < 500; ++tick)
 				Advance(planner, tick);
 
-			const auto downward = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
-			const auto upward = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{2});
+			const auto downward = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{1});
+			const auto upward = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{2});
 			ASSERT_NE(downward, nullptr);
 			ASSERT_NE(upward, nullptr);
 			EXPECT_EQ(downward->Destinations[0], Navigation::Api::ReachabilityState::Reachable);
@@ -358,13 +358,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			terrain.SealedBarrier = true;
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 128, 1024, 1, 64};
-			ASSERT_TRUE(planner.BeginReachability({Navigation::Api::ReachabilityRequestId{1},
+			ASSERT_TRUE(planner.BeginReachabilityQuery({Navigation::Api::ReachabilityRequestId{1},
 												   profiles[0].Id,
 												   Location(0, 0, 1),
 												   {Location(8, 0, 1), Location(32, 0, 1)}}));
 
 			Advance(planner, 0);
-			auto result = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
+			auto result = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{1});
 			ASSERT_NE(result, nullptr);
 			EXPECT_FALSE(result->IsComplete());
 
@@ -381,11 +381,11 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			Terrain terrain;
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles};
-			ASSERT_TRUE(planner.BeginReachability(
+			ASSERT_TRUE(planner.BeginReachabilityQuery(
 				{Navigation::Api::ReachabilityRequestId{1}, profiles[0].Id, Location(0, 0, 1), {Location(8, 0, 1)}}));
 			for (std::uint64_t tick = 0; tick < 20; ++tick)
 				Advance(planner, tick);
-			const auto result = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
+			const auto result = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{1});
 			ASSERT_NE(result, nullptr);
 			ASSERT_TRUE(result->IsComplete());
 			ASSERT_EQ(result->EnvironmentRevision, 1U);
@@ -410,15 +410,15 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultMaximumExpansionsPerRequest,
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
-			ASSERT_TRUE(planner.BeginReachability(
+			ASSERT_TRUE(planner.BeginReachabilityQuery(
 				{Navigation::Api::ReachabilityRequestId{1}, profiles[0].Id, Location(0, 32, 1), {Location(8, 32, 1)}}));
 			for (std::uint64_t tick = 0; tick < 200; ++tick)
 			{
 				Advance(planner, tick);
-				if (planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1})->IsComplete())
+				if (planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{1})->IsComplete())
 					break;
 			}
-			const auto result = planner.ReadReachability(Navigation::Api::ReachabilityRequestId{1});
+			const auto result = planner.GetReachabilityQueryResult(Navigation::Api::ReachabilityRequestId{1});
 			ASSERT_NE(result, nullptr);
 			ASSERT_TRUE(result->IsComplete());
 
@@ -439,7 +439,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 
 			planner.Invalidate(regions);
 
-			EXPECT_EQ(planner.CurrentEnvironmentRevision(), 2U);
+			EXPECT_EQ(planner.GetCurrentEnvironmentRevision(), 2U);
 		}
 
 		TEST(TopologyTest, StepBuildsColdTopologyWithinItsDeterministicBudget)
@@ -448,7 +448,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
 
 			planner.Step({Simulation::Api::TickIndex{0}, Simulation::Api::StandardStepDuration});
 
@@ -462,7 +462,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles};
 			ASSERT_TRUE(
-				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
+				planner.BeginPathPlanning({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
 			Advance(planner, 0);
 			for (std::uint64_t tick = 1; tick < 10; ++tick)
 				planner.Step({Simulation::Api::TickIndex{tick}, Simulation::Api::StandardStepDuration});

@@ -9,7 +9,9 @@ target_include_directories(${PROJECT_NAME} PUBLIC "$<BUILD_INTERFACE:${PROJECT_S
 target_link_libraries(
     ${PROJECT_NAME}
     PUBLIC
+        UnrealVoxelSim.Ecs.Api
         UnrealVoxelSim.Events.Api
+        UnrealVoxelSim.Movement.Api
         UnrealVoxelSim.Navigation.Api
         UnrealVoxelSim.Profiling.Api
         UnrealVoxelSim.Simulation.Api
