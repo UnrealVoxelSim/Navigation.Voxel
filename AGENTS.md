@@ -159,21 +159,17 @@ An integration adapter may follow host requirements within its own boundary.
 ### Entity-component storage
 
 Entity-component storage is shared infrastructure owned by a composition root. Dynamically abstracted domain APIs do not
-exchange an unrestricted ECS registry, queries, storage references, or backend-specific handles. Opaque entity
-identifiers may cross module boundaries when identity is part of the contract. Compile-time ECS binding and capability
-declarations belong in ECS-aware implementation or composition code, not in dynamically abstracted interfaces.
+exchange an unrestricted registry or backend-specific handles. Opaque entity identifiers may cross module boundaries
+when identity is part of the contract.
 
-Domain components are private storage and processing details by default. A stable component may be a public inter-system
-data contract when cross-domain composition or querying is intentional; public visibility does not grant mutation.
-Every ECS-aware system declares its read, existing-value write, structural, and entity-lifecycle authority, and the
-composition root grants a narrow, non-escalating access object. Public state normally has one authoritative writer or
-structural owner. External mutation is limited to explicit input or coordination components with documented lifetime
-and arbitration. Invariant-rich changes still use domain commands. Persistence needs alone do not make a component
-public.
+Components defined in a public `*.Api` module are public read contracts. Merely depending on the API does not grant
+registry access: every ECS-aware system declares its read, existing-value write, structural, and entity-lifecycle
+authority, and composition grants a narrow, non-escalating access object. Mutation remains reserved to the owning domain
+unless its API explicitly grants another writer. Implementation-private components remain private and are not exposed
+merely for persistence.
 
-Large homogeneous data sets are not automatically modeled as ECS entities. Choose storage according to access patterns,
-locality, mutation behavior, and measured performance.
-
+Components are data-only structs. Domain behavior belongs in systems; harmless language-level operations such as
+defaulted construction or comparison do not make a component behavioral.
 ### Derived state
 
 Derived representations are allowed and often necessary for performance, but they never become independent authorities
@@ -189,38 +185,24 @@ for the same domain fact merely because they are cached or incrementally maintai
 
 ### Events and inter-module communication
 
-Use an injected API interface when one module directly requests behavior from another. Use an event when a producer
-announces a fact without depending on the consumers or their reactions.
+Use an injected API interface when one module directly requests behavior from another. State-changing capability methods
+execute synchronously; queries do not mutate authoritative state. Events announce facts or conduct an explicitly
+documented cooperative interaction.
 
-- Commands request state-changing behavior. Queries request information and do not mutate authoritative simulation state.
-  Events announce facts that have already occurred.
-- Do not replace a required synchronous command or query with an event merely to avoid a direct dependency.
-- Define one narrow `I<Name>EventSource` source interface for each event type. Do not group unrelated subscriptions in a
-  broad observer, event-manager, or event-bus interface.
-- Consumers register functors; consuming an event does not require inheritance from a producer-defined observer
-  interface.
-- Event source interfaces, listener types, and move-only RAII subscription handles come from the shared event API.
-  Listener storage, safe mutation during dispatch, and event delivery use the shared event implementation. Domain
-  modules must not create their own subscription or broadcast infrastructure.
-- Event infrastructure is agnostic of simulation ticks, phases, ECS, and persistence. It exposes only its documented
-  publication, subscription, queueing, dispatch, and pending-delivery capabilities. A scheduler or composition root
-  decides when queued events are dispatched.
-- A producer owns its event sources and exposes only the specific source interfaces required by its consumers. Do not
+- Concrete event types are defined in the producer's `*.Api` module. Consumers depend on the event contract and source
+  interface, not on a concrete producer system.
+- Local simulation event publication is immediate and synchronous. Applicable handlers run inline before publication
+  returns, and nested publication is depth-first.
+- Handler order is deterministic. Subscription order is the default; an event requiring another order defines and tests
+  it explicitly.
+- Dispatch snapshots applicable recipients when callbacks could invalidate iteration. Subscription mutation during
+  dispatch is forbidden.
+- Event handlers are `noexcept`; recoverable failures stay within the listener's domain boundary.
+- Producers publish only after the represented mutation is complete and externally observable invariants hold.
+- A producer owns its event sources and exposes only the specific source interfaces required by consumers. Do not
   introduce a global dispatcher, service locator, string-keyed channel, or hidden type-indexed event bus.
-- The composition root constructs event infrastructure and injects the required source interfaces. Consumers receive
-  mandatory event sources explicitly through dependency injection and own the resulting subscriptions; composition code
-  wires only optional or configuration-dependent relationships.
-- Normally, an event source outlives its subscriptions. The shared implementation must safely invalidate outstanding
-  handles if a source is destroyed first. Store subscription handles so they are destroyed before the consumer state
-  and dependencies used by their callbacks.
-- Subscribing must not invoke the listener synchronously. Destroying a subscription prevents subsequent or queued
-  delivery to that listener.
-- Delivery order, reentrancy, mutation during dispatch, exception behavior, thread affinity, and allocation behavior
-  are part of an event implementation's public contract and must be deterministic and tested.
-- Prefer queued delivery when immediate callbacks could cause reentrancy, invalidate iteration, or make execution order
-  implicit. The owning scheduler invokes generic dispatch operations at its chosen boundaries. Cross-thread publication
-  requires an explicit adapter or implementation; it is never an accidental property of the default event source.
-
+- Queued delivery is reserved for a concrete asynchronous boundary such as networking or cross-thread adaptation. It is
+  not the default local inter-system model.
 ## Determinism and time
 
 - Simulation behavior must be reproducible from the same initial state and inputs.

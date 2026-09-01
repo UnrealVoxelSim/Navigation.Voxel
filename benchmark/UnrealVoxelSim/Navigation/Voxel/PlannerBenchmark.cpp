@@ -15,7 +15,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 {
 	namespace
 	{
-		class Terrain final : public Api::IEnvironment
+		class Terrain final : public IEnvironment
 		{
 		public:
 			explicit Terrain(const bool complex = false, const bool sealed = false, const bool pillar = false) noexcept
@@ -23,14 +23,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			{
 			}
 
-			[[nodiscard]] UnrealVoxelSim::Voxel::Api::Region Bounds() const noexcept override
+			[[nodiscard]] UnrealVoxelSim::Voxel::Api::Region GetBounds() const noexcept override
 			{
 				return {{-512, -128, -16}, {513, 128, 32}};
 			}
 
 			[[nodiscard]] std::expected<void, UnrealVoxelSim::Voxel::Api::ReadError>
 			ReadRegion(const UnrealVoxelSim::Voxel::Api::Region region,
-					   const std::span<Api::Cell> output) const override
+					   const std::span<Cell> output) const override
 			{
 				const auto count = region.CellCount();
 				if (!count || *count != output.size())
@@ -74,9 +74,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		void Advance(Planner& planner, const std::uint64_t tick)
 		{
 			const Simulation::Api::StepContext context{Simulation::Api::TickIndex{tick},
-													   Simulation::Api::StandardStepDuration};
-			planner.UpdateTopology(context);
-			planner.Advance(context);
+												   Simulation::Api::StandardStepDuration};
+			planner.Step(context);
 		}
 
 		void RunLongRoutes(benchmark::State& state, const Terrain& terrain)
@@ -93,7 +92,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				{
 					const auto y = static_cast<std::int32_t>(index % 64) - 32;
 					const auto begun = planner->Begin(
-						{Navigation::Api::RequestId{index + 1}, profiles[0].Id, Location(-200, y), Location(200, y)});
+						{profiles[0].Id, Location(-200, y), Location(200, y)});
 					if (!begun)
 						state.SkipWithError("Path request setup failed");
 				}
@@ -117,13 +116,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					pending = false;
 					for (std::size_t index = 0; index < requestCount; ++index)
 						pending = pending ||
-							planner->State(Navigation::Api::RequestId{index + 1}) ==
+							planner->GetPlanState(Navigation::Api::PlanRequestId{index + 1}) ==
 								Navigation::Api::PlanState::Pending;
 				}
 				state.counters["planner_ticks"] = static_cast<double>(tick);
 				state.counters["max_tick_ms"] = maximumTickMilliseconds;
 				state.counters["max_tick_index"] = static_cast<double>(maximumTickIndex);
-				const auto finalPath = planner->ReadPath(Navigation::Api::RequestId{requestCount});
+				const auto finalPath = planner->GetPath(Navigation::Api::PlanRequestId{requestCount});
 				if (!finalPath)
 					state.SkipWithError("A benchmark path was not completed");
 				const auto* finalPathAddress = finalPath.get();
@@ -155,13 +154,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				Planner planner{terrain, profiles};
 				const auto setupStart = std::chrono::steady_clock::now();
 				if (!planner.Begin(
-						{Navigation::Api::RequestId{1}, profiles[0].Id, Location(-200, 0), Location(200, 0)}))
+						{profiles[0].Id, Location(-200, 0), Location(200, 0)}))
 					state.SkipWithError("Impossible path request setup failed");
 				state.counters["setup_ms"] =
 					std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - setupStart).count();
 				std::uint64_t tick{};
 				double maximumTickMilliseconds{};
-				while (planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending)
+				while (planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending)
 				{
 					const auto tickStart = std::chrono::steady_clock::now();
 					Advance(planner, tick++);
@@ -170,7 +169,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 								 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tickStart)
 									 .count());
 				}
-				if (planner.State(Navigation::Api::RequestId{1}) != Navigation::Api::PlanState::Unreachable)
+				if (planner.GetPlanState(Navigation::Api::PlanRequestId{1}) != Navigation::Api::PlanState::Unreachable)
 					state.SkipWithError("Impossible path did not fail");
 				state.counters["planner_ticks"] = static_cast<double>(tick);
 				state.counters["max_tick_ms"] = maximumTickMilliseconds;
@@ -228,11 +227,11 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				static_cast<void>(_);
 				Planner planner{terrain, profiles};
 				if (!planner.Begin(
-						{Navigation::Api::RequestId{1}, profiles[0].Id, Location(-200, 0), Location(200, 0, 17)}))
+						{profiles[0].Id, Location(-200, 0), Location(200, 0, 17)}))
 					state.SkipWithError("Pillar path request setup failed");
 				std::uint64_t tick{};
 				double maximumTickMilliseconds{};
-				while (planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending &&
+				while (planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending &&
 					   tick < 1'000)
 				{
 					const auto tickStart = std::chrono::steady_clock::now();
@@ -242,7 +241,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 								 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tickStart)
 									 .count());
 				}
-				if (planner.State(Navigation::Api::RequestId{1}) != Navigation::Api::PlanState::Unreachable)
+				if (planner.GetPlanState(Navigation::Api::PlanRequestId{1}) != Navigation::Api::PlanState::Unreachable)
 					state.SkipWithError("Isolated pillar did not fail");
 				state.counters["planner_ticks"] = static_cast<double>(tick);
 				state.counters["max_tick_ms"] = maximumTickMilliseconds;

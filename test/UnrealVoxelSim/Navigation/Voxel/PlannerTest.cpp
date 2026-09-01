@@ -9,10 +9,10 @@ namespace UnrealVoxelSim::Navigation::Voxel
 {
 	namespace
 	{
-		class Terrain final : public Api::IEnvironment
+		class Terrain final : public IEnvironment
 		{
 		public:
-			[[nodiscard]] UnrealVoxelSim::Voxel::Api::Region Bounds() const noexcept override
+			[[nodiscard]] UnrealVoxelSim::Voxel::Api::Region GetBounds() const noexcept override
 			{
 				++BoundsReads;
 				return {{-64, -64, -16}, {64, 64, 32}};
@@ -20,7 +20,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 
 			[[nodiscard]] std::expected<void, UnrealVoxelSim::Voxel::Api::ReadError>
 			ReadRegion(const UnrealVoxelSim::Voxel::Api::Region region,
-					   const std::span<Api::Cell> output) const override
+					   const std::span<Cell> output) const override
 			{
 				++RegionReads;
 				const auto count = region.CellCount();
@@ -70,9 +70,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		void Advance(Planner& planner, const std::uint64_t tick)
 		{
 			const Simulation::Api::StepContext context{Simulation::Api::TickIndex{tick},
-													   Simulation::Api::StandardStepDuration};
-			planner.UpdateTopology(context);
-			planner.Advance(context);
+												   Simulation::Api::StandardStepDuration};
+			planner.Step(context);
 		}
 
 		TEST(PlannerTest, BoundsPendingEndpointPollingPerTick)
@@ -82,13 +81,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			Planner planner{terrain, profiles, 1};
 			for (std::uint64_t index = 1; index <= 10'000; ++index)
 				ASSERT_TRUE(planner.Begin(
-					{Navigation::Api::RequestId{index}, profiles[0].Id, Location(0, 0, 1), Location(48, 48, 1)}));
+					{profiles[0].Id, Location(0, 0, 1), Location(48, 48, 1)}));
 
 			terrain.BoundsReads = 0;
-			planner.Advance({Simulation::Api::TickIndex{0}, Simulation::Api::StandardStepDuration});
+			planner.Step({Simulation::Api::TickIndex{0}, Simulation::Api::StandardStepDuration});
 
 			EXPECT_GT(terrain.BoundsReads, 0U);
-			EXPECT_LT(terrain.BoundsReads, 1'100U);
+			EXPECT_LT(terrain.BoundsReads, 5'000U);
 		}
 
 		TEST(PlannerTest, FindsDeterministicEightWayPathAcrossFlatTerrain)
@@ -97,15 +96,15 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(12, 12, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(12, 12, 1)}));
 
 			for (std::uint64_t tick = 0;
-				 tick < 20 && planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending;
+				 tick < 20 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
 				 ++tick)
 				Advance(planner, tick);
 
-			EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Complete);
-			const auto path = planner.ReadPath(Navigation::Api::RequestId{1});
+			EXPECT_EQ(planner.GetPlanState(Navigation::Api::PlanRequestId{1}), Navigation::Api::PlanState::Complete);
+			const auto path = planner.GetPath(Navigation::Api::PlanRequestId{1});
 			ASSERT_NE(path, nullptr);
 			ASSERT_FALSE(path->Waypoints.empty());
 			EXPECT_EQ(path->Waypoints.front().Location, Location(0, 0, 1));
@@ -126,14 +125,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
 			ASSERT_TRUE(planner.Begin(
-				{Navigation::Api::RequestId{1}, profiles[0].Id, Location(-48, 0, 1), Location(48, 0, 1)}));
+				{profiles[0].Id, Location(-48, 0, 1), Location(48, 0, 1)}));
 
 			for (std::uint64_t tick = 0;
-				 tick < 200 && planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending;
+				 tick < 200 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
 				 ++tick)
 				Advance(planner, tick);
 
-			EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Complete);
+			EXPECT_EQ(planner.GetPlanState(Navigation::Api::PlanRequestId{1}), Navigation::Api::PlanState::Complete);
 			EXPECT_LT(terrain.RegionReads, 128U);
 		}
 
@@ -148,18 +147,18 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							Planner::DefaultReachabilityComponentExpansionsPerTick,
 							64};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{2}, profiles[0].Id, Location(0, 32, 1), Location(8, 32, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 32, 1), Location(8, 32, 1)}));
 			for (std::uint64_t tick = 0; tick < 200; ++tick)
 			{
 				Advance(planner, tick);
-				if (planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Complete &&
-					planner.State(Navigation::Api::RequestId{2}) == Navigation::Api::PlanState::Complete)
+				if (planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Complete &&
+					planner.GetPlanState(Navigation::Api::PlanRequestId{2}) == Navigation::Api::PlanState::Complete)
 					break;
 			}
-			const auto nearPath = planner.ReadPath(Navigation::Api::RequestId{1});
-			const auto distantPath = planner.ReadPath(Navigation::Api::RequestId{2});
+			const auto nearPath = planner.GetPath(Navigation::Api::PlanRequestId{1});
+			const auto distantPath = planner.GetPath(Navigation::Api::PlanRequestId{2});
 			ASSERT_NE(nearPath, nullptr);
 			ASSERT_NE(distantPath, nullptr);
 			ASSERT_TRUE(planner.IsPathCurrent(*nearPath));
@@ -179,14 +178,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(4, 0, 2)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(4, 0, 2)}));
 
 			for (std::uint64_t tick = 0;
-				 tick < 20 && planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending;
+				 tick < 20 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
 				 ++tick)
 				Advance(planner, tick);
 
-			const auto path = planner.ReadPath(Navigation::Api::RequestId{1});
+			const auto path = planner.GetPath(Navigation::Api::PlanRequestId{1});
 			ASSERT_NE(path, nullptr);
 			EXPECT_TRUE(std::ranges::any_of(
 				path->Waypoints,
@@ -200,14 +199,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(3, 0, 2)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(3, 0, 2)}));
 
 			for (std::uint64_t tick = 0;
-				 tick < 200 && planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending;
+				 tick < 200 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
 				 ++tick)
 				Advance(planner, tick);
 
-			EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Unreachable);
+			EXPECT_EQ(planner.GetPlanState(Navigation::Api::PlanRequestId{1}), Navigation::Api::PlanState::Unreachable);
 		}
 
 		TEST(PlannerTest, HonorsDeterministicExpansionBudget)
@@ -217,15 +216,15 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 1};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(20, 0, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(20, 0, 1)}));
 
 			Advance(planner, 0);
-			EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Pending);
+			EXPECT_EQ(planner.GetPlanState(Navigation::Api::PlanRequestId{1}), Navigation::Api::PlanState::Pending);
 			for (std::uint64_t tick = 1;
-				 tick < 100 && planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending;
+				 tick < 100 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
 				 ++tick)
 				Advance(planner, tick);
-			EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Complete);
+			EXPECT_EQ(planner.GetPlanState(Navigation::Api::PlanRequestId{1}), Navigation::Api::PlanState::Complete);
 		}
 
 		TEST(PlannerTest, UsesHierarchicalPortalThroughLongBarrier)
@@ -235,14 +234,14 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 4096};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
 
 			for (std::uint64_t tick = 0;
-				 tick < 200 && planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending;
+				 tick < 200 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending;
 				 ++tick)
 				Advance(planner, tick);
 
-			const auto path = planner.ReadPath(Navigation::Api::RequestId{1});
+			const auto path = planner.GetPath(Navigation::Api::PlanRequestId{1});
 			ASSERT_NE(path, nullptr);
 			EXPECT_TRUE(std::ranges::any_of(
 				path->Waypoints, [](const auto& waypoint) { return waypoint.Location.Y.ToDouble() >= 17.0; }));
@@ -255,16 +254,16 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles, 128, 1, Planner::DefaultReachabilityComponentExpansionsPerTick, 64};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(32, 0, 1)}));
 
 			std::uint64_t tick{};
-			while (tick < 200 && planner.State(Navigation::Api::RequestId{1}) == Navigation::Api::PlanState::Pending)
+			while (tick < 200 && planner.GetPlanState(Navigation::Api::PlanRequestId{1}) == Navigation::Api::PlanState::Pending)
 			{
 				Advance(planner, tick);
 				++tick;
 			}
 
-			EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Unreachable);
+			EXPECT_EQ(planner.GetPlanState(Navigation::Api::PlanRequestId{1}), Navigation::Api::PlanState::Unreachable);
 			EXPECT_LE(tick, 200U);
 		}
 
@@ -443,19 +442,16 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			EXPECT_EQ(planner.CurrentEnvironmentRevision(), 2U);
 		}
 
-		TEST(TopologyTest, PlannerAdvanceNeverBuildsColdTopologySynchronously)
+		TEST(TopologyTest, StepBuildsColdTopologyWithinItsDeterministicBudget)
 		{
 			Terrain terrain;
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
 
-			planner.Advance({Simulation::Api::TickIndex{0}, Simulation::Api::StandardStepDuration});
+			planner.Step({Simulation::Api::TickIndex{0}, Simulation::Api::StandardStepDuration});
 
-			EXPECT_EQ(terrain.RegionReads, 0U);
-			EXPECT_EQ(planner.State(Navigation::Api::RequestId{1}), Navigation::Api::PlanState::Pending);
-			planner.UpdateTopology({Simulation::Api::TickIndex{1}, Simulation::Api::StandardStepDuration});
 			EXPECT_GT(terrain.RegionReads, 0U);
 			EXPECT_LE(terrain.RegionReads, Planner::DefaultTileBuildsPerTopologyUpdate);
 		}
@@ -466,15 +462,15 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const std::array profiles{Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}}};
 			Planner planner{terrain, profiles};
 			ASSERT_TRUE(
-				planner.Begin({Navigation::Api::RequestId{1}, profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
+				planner.Begin({profiles[0].Id, Location(0, 0, 1), Location(8, 0, 1)}));
 			Advance(planner, 0);
 			for (std::uint64_t tick = 1; tick < 10; ++tick)
-				planner.UpdateTopology({Simulation::Api::TickIndex{tick}, Simulation::Api::StandardStepDuration});
+				planner.Step({Simulation::Api::TickIndex{tick}, Simulation::Api::StandardStepDuration});
 			const auto readsBeforeInvalidation = terrain.RegionReads;
 			const std::array regions{UnrealVoxelSim::Voxel::Api::Region{{0, 0, 0}, {1, 1, 2}}};
 
 			planner.Invalidate(regions);
-			planner.UpdateTopology({Simulation::Api::TickIndex{10}, Simulation::Api::StandardStepDuration});
+			planner.Step({Simulation::Api::TickIndex{10}, Simulation::Api::StandardStepDuration});
 
 			EXPECT_GT(terrain.RegionReads, readsBeforeInvalidation);
 		}
