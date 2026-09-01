@@ -8,12 +8,10 @@
 namespace UnrealVoxelSim::Navigation::Voxel
 {
 	Follower::Follower(Access access,
-	                   Api::IPlanner& planner,
-	                   Movement::Api::IIntentReceiver& movementIntent,
-	                   const std::span<const Movement::Api::GroundedProfile> profiles) :
-		m_Access(access),
-		m_Planner(planner),
-		m_MovementIntent(movementIntent),
+					   Api::IPlanner& planner,
+					   Movement::Api::IIntentReceiver& movementIntent,
+					   const std::span<const Movement::Api::GroundedProfile> profiles) :
+		m_Access(access), m_Planner(planner), m_MovementIntent(movementIntent),
 		m_Profiles(profiles.begin(), profiles.end())
 	{
 		if (m_Profiles.empty() ||
@@ -34,8 +32,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	}
 
 	bool Follower::Within(const Spatial::Api::Position left,
-	                      const Spatial::Api::Position right,
-	                      const Math::Api::FixedPointScalar tolerance) noexcept
+						  const Spatial::Api::Position right,
+						  const Math::Api::FixedPointScalar tolerance) noexcept
 	{
 		const auto absolute = [](const std::int64_t value) { return value < 0 ? -value : value; };
 		return absolute(left.X.Raw() - right.X.Raw()) <= tolerance.Raw() &&
@@ -44,8 +42,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	}
 
 	Math::Api::FixedPointScalar Follower::VelocityToward(const std::int64_t delta,
-	                                                     const Math::Api::FixedPointScalar maximum,
-	                                                     const Simulation::Api::StepDuration duration) noexcept
+														 const Math::Api::FixedPointScalar maximum,
+														 const Simulation::Api::StepDuration duration) noexcept
 	{
 		constexpr std::int64_t NanosecondsPerSecond = 1'000'000'000;
 		const auto nanoseconds = duration.Value().count();
@@ -63,9 +61,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 		const auto numerator = magnitude * NanosecondsPerSecond + static_cast<std::uint64_t>(nanoseconds) - 1;
 		const auto required = std::min(maximumRaw, numerator / static_cast<std::uint64_t>(nanoseconds));
-		return Math::Api::FixedPointScalar::FromRaw(delta < 0
-			                                            ? -static_cast<std::int64_t>(required)
-			                                            : static_cast<std::int64_t>(required));
+		return Math::Api::FixedPointScalar::FromRaw(delta < 0 ? -static_cast<std::int64_t>(required)
+															  : static_cast<std::int64_t>(required));
 	}
 
 	const Movement::Api::GroundedProfile* Follower::Profile(const Movement::Api::ProfileId id) const noexcept
@@ -75,10 +72,10 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	}
 
 	void Follower::Begin(FollowingStateComponent& following,
-	                     Api::ExecutionStateComponent& execution,
-	                     const Spatial::Api::Position& position,
-	                     const Movement::Api::ProfileId profile,
-	                     const Api::ExecutionState pendingState)
+						 Api::ExecutionStateComponent& execution,
+						 const Spatial::Api::Position& position,
+						 const Movement::Api::ProfileId profile,
+						 const Api::ExecutionState pendingState)
 	{
 		m_Planner.CancelPathPlanning(following.Request);
 		following.Request = {};
@@ -96,7 +93,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		}
 	}
 
-	std::expected<void, Api::NavigationError> Follower::BeginNavigateToGoal(const Ecs::Api::EntityId entity, const Api::Goal goal)
+	std::expected<void, Api::NavigationError> Follower::BeginNavigateToGoal(const Ecs::Api::EntityId entity,
+																			const Api::Goal goal)
 	{
 		AssertOwnerThread();
 		if (!entity.IsValid() || !m_Access.IsAlive(entity))
@@ -162,10 +160,10 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		m_Access.ForEach(
 			Query{},
 			[this, context](const Ecs::Api::EntityId entity,
-			                const Spatial::Api::PositionComponent& positionComponent,
-			                const Movement::Api::ProfileComponent& profileComponent,
-			                Api::ExecutionStateComponent& execution,
-			                FollowingStateComponent& following)
+							const Spatial::Api::PositionComponent& positionComponent,
+							const Movement::Api::ProfileComponent& profileComponent,
+							Api::ExecutionStateComponent& execution,
+							FollowingStateComponent& following)
 			{
 				if (execution.State == Api::ExecutionState::Planning ||
 					execution.State == Api::ExecutionState::Replanning)
@@ -198,10 +196,10 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				if (!m_Planner.IsPathCurrent(*following.Path))
 				{
 					Begin(following,
-					      execution,
-					      positionComponent.Value,
-					      profileComponent.Profile,
-					      Api::ExecutionState::Replanning);
+						  execution,
+						  positionComponent.Value,
+						  profileComponent.Profile,
+						  Api::ExecutionState::Replanning);
 					return;
 				}
 				while (
@@ -222,18 +220,18 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				const auto& waypoint = following.Path->Waypoints[following.Waypoint];
 				const auto xDelta = waypoint.Location.X.Raw() - positionComponent.Value.X.Raw();
 				const auto yDelta = waypoint.Location.Y.Raw() - positionComponent.Value.Y.Raw();
+				const auto zDelta = waypoint.Location.Z.Raw() - positionComponent.Value.Z.Raw();
 				const auto sign = [](const std::int64_t value) { return value < 0 ? -1 : value > 0 ? 1 : 0; };
-				const auto component = sign(xDelta) != 0 && sign(yDelta) != 0
-					                       ? DiagonalComponent(profile->MaximumSpeed)
-					                       : profile->MaximumSpeed;
+				const auto swimming = waypoint.Primitive == Api::StandardPrimitives::Swim;
+				const auto speed = swimming ? profile->SwimmingSpeed : profile->MaximumSpeed;
+				const auto component = sign(xDelta) != 0 && sign(yDelta) != 0 ? DiagonalComponent(speed) : speed;
 				const auto jump = waypoint.Primitive == Api::StandardPrimitives::Rise &&
 					positionComponent.Value.Z.Raw() + tolerance.Raw() < waypoint.Location.Z.Raw();
 				const Movement::Api::Intent intent{
-					{
-						VelocityToward(xDelta, component, context.Duration),
-						VelocityToward(yDelta, component, context.Duration),
-						{}
-					},
+					{VelocityToward(xDelta, component, context.Duration),
+					 VelocityToward(yDelta, component, context.Duration),
+					 swimming ? VelocityToward(zDelta, profile->SwimmingSpeed, context.Duration)
+							  : Math::Api::FixedPointScalar{}},
 					jump,
 				};
 				if (!m_MovementIntent.SetIntent(entity, context.Tick, intent))

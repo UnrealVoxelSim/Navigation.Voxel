@@ -15,11 +15,11 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	{
 		using Scalar = Math::Api::FixedPointScalar;
 
-		[[nodiscard]] constexpr Spatial::Api::Position Location(const int x)
+		[[nodiscard]] constexpr Spatial::Api::Position Location(const int x, const int z = 1)
 		{
 			return {Scalar::FromRaw(static_cast<std::int64_t>(x) * Scalar::OneRaw + Scalar::OneRaw / 2),
-			        Scalar::FromRaw(Scalar::OneRaw / 2),
-			        Scalar::FromWhole(1)};
+					Scalar::FromRaw(Scalar::OneRaw / 2),
+					Scalar::FromWhole(z)};
 		}
 
 		class PlannerStub final : public Api::IPlanner
@@ -55,12 +55,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				auto path = std::make_shared<Api::Path>();
 				path->EnvironmentRevision = 1;
 				path->Waypoints = {{iterator->second.Start, Api::StandardPrimitives::Traverse},
-				                   {iterator->second.Goal, Api::StandardPrimitives::Traverse}};
+								   {iterator->second.Goal, Primitive}};
 				return path;
 			}
 
 			std::map<Api::PlanRequestId, Api::PlanRequest> Requests;
 			std::map<Api::PlanRequestId, Api::PlanState> States;
+			Api::PrimitiveId Primitive{Api::StandardPrimitives::Traverse};
 
 		private:
 			std::uint64_t m_Next{1};
@@ -69,10 +70,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		class IntentReceiverStub final : public Movement::Api::IIntentReceiver
 		{
 		public:
-			std::expected<void, Movement::Api::IntentError> SetIntent(
-				const Ecs::Api::EntityId entity,
-				const Simulation::Api::TickIndex tick,
-				const Movement::Api::Intent intent) override
+			std::expected<void, Movement::Api::IntentError> SetIntent(const Ecs::Api::EntityId entity,
+																	  const Simulation::Api::TickIndex tick,
+																	  const Movement::Api::Intent intent) override
 			{
 				Inputs[entity] = {tick, intent.DesiredVelocity, intent.JumpRequested};
 				return {};
@@ -115,6 +115,28 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			follower.CancelNavigateToGoal(entity);
 
 			EXPECT_EQ(registry.Get<Api::ExecutionStateComponent>(entity)->get().State, Api::ExecutionState::Cancelled);
+		}
+
+		TEST(FollowerTest, FollowsSwimmingWaypointWithVerticalVelocity)
+		{
+			auto profile = Movement::Api::GroundedProfile{Movement::Api::ProfileId{1}};
+			profile.SwimmingSpeed = Scalar::FromWhole(2);
+			const std::array profiles{profile};
+			Ecs::EnTT::Registry registry{Ecs::Api::RegistryScopeId{1}};
+			const auto entity = registry.Create();
+			ASSERT_TRUE(registry.Assign<Spatial::Api::PositionComponent>(entity, Location(0, 1)));
+			ASSERT_TRUE(registry.Assign<Movement::Api::ProfileComponent>(entity, profiles[0].Id));
+			PlannerStub planner;
+			planner.Primitive = Api::StandardPrimitives::Swim;
+			IntentReceiverStub movementIntent;
+			Follower follower{Follower::Access{registry}, planner, movementIntent, profiles};
+
+			ASSERT_TRUE(follower.BeginNavigateToGoal(entity, {Location(0, 3), Scalar::FromRaw(Scalar::OneRaw / 4)}));
+			follower.Step({Simulation::Api::TickIndex{0}, Simulation::Api::StandardStepDuration});
+
+			ASSERT_TRUE(movementIntent.Inputs.contains(entity));
+			EXPECT_GT(movementIntent.Inputs.at(entity).DesiredVelocity.Z, Scalar{});
+			EXPECT_FALSE(movementIntent.Inputs.at(entity).JumpRequested);
 		}
 	} // namespace
 } // namespace UnrealVoxelSim::Navigation::Voxel

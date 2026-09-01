@@ -8,6 +8,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 	{
 		bool BlocksOccupancy{};
 		bool SupportsGroundedBody{};
+		bool AllowsSwimming{};
 		std::uint16_t TraversalCost{1000};
 	};
 }
