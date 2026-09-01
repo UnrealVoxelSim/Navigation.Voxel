@@ -1,6 +1,7 @@
 add_library(
     ${PROJECT_NAME}
     UnrealVoxelSim/Navigation/Voxel/Planner.cpp
+    UnrealVoxelSim/Navigation/Voxel/Follower.cpp
     UnrealVoxelSim/Navigation/Voxel/SolidEnvironment.cpp
     UnrealVoxelSim/Navigation/Voxel/SolidInvalidation.cpp
 )
