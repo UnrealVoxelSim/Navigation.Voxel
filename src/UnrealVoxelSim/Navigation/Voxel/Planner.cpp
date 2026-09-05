@@ -217,6 +217,13 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			std::uint32_t RemainingTiles{};
 		};
 
+		struct CoarseCorridor final
+		{
+			std::vector<TileKey> Allowed;
+			std::map<TileKey, TileGuidance> Guidance;
+			std::set<TileKey> Dependencies;
+		};
+
 		struct Search final
 		{
 			Movement::Api::ProfileId Profile;
@@ -224,17 +231,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			VoxelApi::Position Goal;
 			std::priority_queue<OpenEntry, std::vector<OpenEntry>, OpenWorse> Open;
 			std::unordered_map<VoxelApi::Position, Record, PositionHash> Records;
-			std::set<TileKey> Corridor;
-			std::map<TileKey, TileGuidance> Guidance;
+			std::shared_ptr<const CoarseCorridor> Corridor;
 			bool FallbackUsed{};
 			std::size_t ExpandedNodes{};
-		};
-
-		struct CoarseCorridor final
-		{
-			std::vector<TileKey> Allowed;
-			std::map<TileKey, TileGuidance> Guidance;
-			std::set<TileKey> Dependencies;
 		};
 
 		struct CoarseRecord final
@@ -285,6 +284,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			std::optional<NavigationApi::PlanRequest> PendingPlan;
 			std::optional<VoxelApi::Position> ProjectedStart;
 			std::optional<VoxelApi::Position> ProjectedGoal;
+			std::uint64_t DirectPathCheckedGeneration{};
+			bool DirectPathBlocked{};
 			std::optional<ComponentKey> ReachabilitySource;
 			std::optional<ComponentKey> ReachabilityGoal;
 		};
@@ -317,7 +318,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		struct PathValidation final
 		{
 			Movement::Api::ProfileId Profile;
-			std::set<TileKey> Dependencies;
+			std::vector<TileKey> Dependencies;
 			bool Current{true};
 		};
 
@@ -1373,14 +1374,6 @@ namespace UnrealVoxelSim::Navigation::Voxel
 
 		[[nodiscard]] bool HasComponentDemand(const ComponentSearch& search) const
 		{
-			for (const auto& request : Requests)
-			{
-				if (request.PendingPlan && request.ReachabilitySource == search.Source && request.ReachabilityGoal &&
-					!search.Visited.contains(*request.ReachabilityGoal))
-				{
-					return true;
-				}
-			}
 			for (const auto& request : ReachabilityRequests)
 			{
 				if (request.Source != search.Source || request.Result->IsComplete())
@@ -1568,7 +1561,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			return best;
 		}
 
-		[[nodiscard]] std::optional<CoarseCorridor> BuildCorridor(const VoxelApi::Position start,
+		[[nodiscard]] std::shared_ptr<const CoarseCorridor> BuildCorridor(const VoxelApi::Position start,
 																  const VoxelApi::Position goal,
 																  const Movement::Api::GroundedProfile& profile)
 		{
@@ -1613,7 +1606,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				const auto neighbors = TileNeighbors(entry.Tile, profile);
 				if (!neighbors)
 				{
-					return std::nullopt;
+					return {};
 				}
 				for (const auto neighbor : *neighbors)
 				{
@@ -1632,12 +1625,12 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				}
 			}
 
-			CoarseCorridor corridor;
+			auto corridor = std::make_shared<CoarseCorridor>();
 			for (const auto& [tile, record] : records)
 			{
 				if (record.Closed)
 				{
-					corridor.Dependencies.insert(tile);
+					corridor->Dependencies.insert(tile);
 				}
 			}
 			if (reached)
@@ -1658,20 +1651,20 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				for (std::size_t index = 0; index < centerLine.size(); ++index)
 				{
 					const auto tile = centerLine[index];
-					corridor.Allowed.push_back(tile);
+					corridor->Allowed.push_back(tile);
 					const auto target = index + 1 < centerLine.size()
 						? FindPortal(tile, centerLine[index + 1], goal, profile).value_or(goal)
 						: goal;
-					corridor.Guidance.emplace(
+					corridor->Guidance.emplace(
 						tile, TileGuidance{target, static_cast<std::uint32_t>(centerLine.size() - index - 1)});
 				}
-				std::ranges::sort(corridor.Allowed);
-				corridor.Allowed.erase(std::unique(corridor.Allowed.begin(), corridor.Allowed.end()),
-									   corridor.Allowed.end());
+				std::ranges::sort(corridor->Allowed);
+				corridor->Allowed.erase(std::unique(corridor->Allowed.begin(), corridor->Allowed.end()),
+									  corridor->Allowed.end());
 			}
 			if (TopologyDemandGeneration != demandGeneration)
 			{
-				return std::nullopt;
+				return {};
 			}
 			Corridors.emplace(key, corridor);
 			return corridor;
@@ -1681,11 +1674,12 @@ namespace UnrealVoxelSim::Navigation::Voxel
 														   const VoxelApi::Position position) noexcept
 		{
 			const auto direct = Heuristic(position, search.Goal);
-			const auto guidance = search.Guidance.find(ToTile(position));
-			if (guidance == search.Guidance.end())
+			if (!search.Corridor)
 			{
 				return direct;
 			}
+			const auto guidance = search.Corridor->Guidance.find(ToTile(position));
+			if (guidance == search.Corridor->Guidance.end()) return direct;
 			const auto guided = Heuristic(position, guidance->second.Target) +
 				static_cast<std::uint64_t>(guidance->second.RemainingTiles) * TileEdge * CardinalCost;
 			return std::max(direct, guided);
@@ -1723,8 +1717,11 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			PathValidation validation{profile};
 			for (const auto position : positions)
 			{
-				validation.Dependencies.insert(ToTile(position));
+				validation.Dependencies.push_back(ToTile(position));
 			}
+			std::ranges::sort(validation.Dependencies);
+			validation.Dependencies.erase(
+				std::unique(validation.Dependencies.begin(), validation.Dependencies.end()), validation.Dependencies.end());
 			PathValidations.emplace(path->ValidationToken, std::move(validation));
 			request.Path = std::move(path);
 			request.State = NavigationApi::PlanState::Complete;
@@ -1760,9 +1757,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			const auto goal = *request.ProjectedGoal;
 			const auto maximumSteps = static_cast<std::size_t>(
 				std::max(std::abs(static_cast<std::int64_t>(goal.X) - request.ProjectedStart->X),
-						 std::abs(static_cast<std::int64_t>(goal.Y) - request.ProjectedStart->Y)));
+							 std::abs(static_cast<std::int64_t>(goal.Y) - request.ProjectedStart->Y)));
 			auto current = *request.ProjectedStart;
-			std::set<TileKey> dependencies{ToTile(current)};
+			std::vector<TileKey> dependencies{ToTile(current)};
 			std::array<std::optional<std::pair<ProfileTileKey, const Tile*>>, 8> tileCache;
 			std::size_t nextCacheEntry{};
 			const auto bounds = Environment.GetBounds();
@@ -1829,7 +1826,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					}
 				}
 				current = next;
-				dependencies.insert(ToTile(current));
+				dependencies.push_back(ToTile(current));
 				++steps;
 				if (steps > maximumSteps || current.Z != goal.Z)
 				{
@@ -1845,6 +1842,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			{
 				path->Waypoints.push_back({ToContinuous(goal), NavigationApi::StandardPrimitives::Traverse});
 			}
+			std::ranges::sort(dependencies);
+			dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
 			PathValidations.emplace(path->ValidationToken, PathValidation{profile.Id, std::move(dependencies)});
 			request.Path = std::move(path);
 			request.State = NavigationApi::PlanState::Complete;
@@ -1937,7 +1936,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 							{
 								continue;
 							}
-							if (!search.Corridor.empty() && !search.Corridor.contains(ToTile(*neighbor)))
+							if (search.Corridor &&
+								!std::ranges::binary_search(search.Corridor->Allowed, ToTile(*neighbor)))
 							{
 								continue;
 							}
@@ -1961,10 +1961,9 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				}
 				return true;
 			}
-			if (!search.Corridor.empty() && !search.FallbackUsed)
+			if (search.Corridor && !search.FallbackUsed)
 			{
-				search.Corridor.clear();
-				search.Guidance.clear();
+				search.Corridor.reset();
 				search.FallbackUsed = true;
 				search.Records.clear();
 				while (!search.Open.empty())
@@ -2185,7 +2184,16 @@ namespace UnrealVoxelSim::Navigation::Voxel
 
 				const auto* profile = Profile(request.PendingPlan->Profile);
 				assert(profile != nullptr);
-				const auto direct = TryDirectPath(request, *profile);
+				UNREALVOXELSIM_PROFILE_ZONE(Profiling, "Direct path checks");
+				const auto direct = request.DirectPathBlocked &&
+					request.DirectPathCheckedGeneration == Revision
+					? DirectPathState::Blocked
+					: TryDirectPath(request, *profile);
+				if (direct == DirectPathState::Blocked)
+				{
+					request.DirectPathBlocked = true;
+					request.DirectPathCheckedGeneration = Revision;
+				}
 				if (direct == DirectPathState::Pending)
 				{
 					continue;
@@ -2208,10 +2216,12 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				{
 					continue;
 				}
-				request.SearchState.emplace(
-					Search{request.PendingPlan->Profile, *request.ProjectedStart, *request.ProjectedGoal});
-				request.SearchState->Corridor.insert(corridor->Allowed.begin(), corridor->Allowed.end());
-				request.SearchState->Guidance = corridor->Guidance;
+				request.SearchState.emplace(Search{request.PendingPlan->Profile,
+													*request.ProjectedStart,
+													*request.ProjectedGoal,
+													{},
+													{},
+													corridor});
 				request.SearchState->FallbackUsed = corridor->Allowed.empty();
 				request.SearchState->Records[*request.ProjectedStart].Cost = 0;
 				const auto heuristic = GuidedHeuristic(*request.SearchState, *request.ProjectedStart);
@@ -2245,7 +2255,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		std::uint64_t TopologyDemandGeneration{};
 		bool TopologyBuiltSincePlannerAdvance{};
 		std::map<ProfileTileKey, std::vector<TileKey>> TileNeighborCache;
-		std::map<CorridorKey, CoarseCorridor> Corridors;
+		std::map<CorridorKey, std::shared_ptr<const CoarseCorridor>> Corridors;
 		std::map<ComponentKey, std::vector<ComponentKey>> ComponentEdgeCache;
 		std::map<ComponentKey, std::vector<ComponentKey>> ComponentIncomingCache;
 		std::map<ComponentKey, ComponentEdgeBuild> PendingComponentEdgeBuilds;
@@ -2546,7 +2556,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 					  [&](const auto& entry)
 					  {
 						  return std::ranges::any_of(
-							  entry.second.Dependencies,
+							  entry.second->Dependencies,
 							  [&](const auto tile)
 							  { return m_Impl->GraphTileAffected(entry.first.Profile, tile, affectedTiles); });
 					  });
@@ -2661,6 +2671,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			request.PendingPlan = request.Plan;
 			request.ProjectedStart.reset();
 			request.ProjectedGoal.reset();
+			request.DirectPathBlocked = false;
+			request.DirectPathCheckedGeneration = 0;
 			request.ReachabilitySource.reset();
 			request.ReachabilityGoal.reset();
 			m_Impl->QueueProjection(request.Plan.Start, *m_Impl->Profile(request.Plan.Profile));
