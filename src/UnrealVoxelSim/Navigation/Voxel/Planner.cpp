@@ -319,6 +319,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		{
 			Movement::Api::ProfileId Profile;
 			std::vector<TileKey> Dependencies;
+			std::vector<VoxelApi::Position> Positions;
 			bool Current{true};
 		};
 
@@ -1718,6 +1719,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			for (const auto position : positions)
 			{
 				validation.Dependencies.push_back(ToTile(position));
+				validation.Positions.push_back(position);
 			}
 			std::ranges::sort(validation.Dependencies);
 			validation.Dependencies.erase(
@@ -1793,6 +1795,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				return tile->second.Standable[index] != 0 || tile->second.Swimmable[index] != 0;
 			};
 			std::size_t steps{};
+			std::vector<VoxelApi::Position> pathPositions{current};
 			while (current != goal)
 			{
 				const auto sign = [](const std::int32_t value) { return value < 0 ? -1 : value > 0 ? 1 : 0; };
@@ -1827,6 +1830,7 @@ namespace UnrealVoxelSim::Navigation::Voxel
 				}
 				current = next;
 				dependencies.push_back(ToTile(current));
+				pathPositions.push_back(current);
 				++steps;
 				if (steps > maximumSteps || current.Z != goal.Z)
 				{
@@ -1844,7 +1848,8 @@ namespace UnrealVoxelSim::Navigation::Voxel
 			}
 			std::ranges::sort(dependencies);
 			dependencies.erase(std::unique(dependencies.begin(), dependencies.end()), dependencies.end());
-			PathValidations.emplace(path->ValidationToken, PathValidation{profile.Id, std::move(dependencies)});
+			PathValidations.emplace(path->ValidationToken,
+				PathValidation{profile.Id, std::move(dependencies), std::move(pathPositions)});
 			request.Path = std::move(path);
 			request.State = NavigationApi::PlanState::Complete;
 			request.SearchState.reset();
@@ -2591,10 +2596,19 @@ namespace UnrealVoxelSim::Navigation::Voxel
 		for (auto& entry : m_Impl->PathValidations)
 		{
 			auto& validation = entry.second;
-			if (validation.Current &&
-				std::ranges::any_of(validation.Dependencies,
+			const auto affected = validation.Positions.empty()
+				? std::ranges::any_of(validation.Dependencies,
 									[&](const auto tile)
-									{ return m_Impl->GraphTileAffected(validation.Profile, tile, affectedTiles); }))
+									{ return m_Impl->GraphTileAffected(validation.Profile, tile, affectedTiles); })
+				: std::ranges::any_of(validation.Positions,
+									[&](const auto position)
+									{
+										const VoxelApi::Region envelope{{position.X - 1, position.Y - 1, position.Z - 1},
+											{position.X + 2, position.Y + 2, position.Z + 3}};
+										return std::ranges::any_of(regions,
+											[&](const auto region) { return Intersects(envelope, region); });
+									});
+			if (validation.Current && affected)
 			{
 				validation.Current = false;
 			}
